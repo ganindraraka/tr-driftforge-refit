@@ -6,16 +6,12 @@
 // snapshot's live-token protocols are kept apart and shown as the market's own values, never mixed into
 // the ranked board.
 //
-// Implied value follows only from the snapshot's own figures:
-//
-//   base       = tvl_usd x BASE_MULTIPLE
-//   growth     = clamp(change_7d, -60, 120) per cent
-//   growthMult = 1 + (growth / 100) x GROWTH_WEIGHT
-//   maturity   = 0.6 + min(age_days, 1095) / 1095 x 0.4   (age_days unknown: 365)
-//   implied    = max(1, round(base x growthMult x maturity))
-//
-// The constants are the house model's, stated in the dashboard and changeable in the model sandbox. No
-// protocol name is ever special-cased: the same function scores every row.
+// Implied = TVL × 0.25 × growth × maturity, rounded to whole dollars.
+// Growth = 1 + 0.5 tanh(change_7d / 50), bounded between 0.5 and 1.5.
+// Maturity = 0.5 + age_days / (age_days + 365): 0.5 at launch, 1 at a year,
+// approaching 1.5 as the operating record grows. Missing growth or age is neutral.
+// Listing age is an operating-history proxy, not proof of continuous token absence.
+// The 0.25 baseline is an explicit valuation assumption, not a fitted market price.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -55,16 +51,16 @@ export interface ModelConstants {
 export const MODEL: ModelConstants = {
   base_multiple: 0.25,
   growth_weight: 0.5,
-  growth_floor: -60,
-  growth_cap: 120,
-  maturity_floor: 0.6,
-  maturity_range: 0.4,
-  maturity_days: 1095,
+  growth_floor: -50,
+  growth_cap: 50,
+  maturity_floor: 0.5,
+  maturity_range: 1,
+  maturity_days: 365,
   unknown_age_days: 365,
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-1';
+export const MODEL_VERSION = 'radar-2';
 
 /** How many pre-token protocols below the watchlist floor the early radar carries, by TVL. */
 export const EARLY_ROWS = 160;
@@ -103,6 +99,7 @@ export interface BoardRow {
     age_days: number | null;
   };
   farm_steps: string[];
+  reasons: string[];
 }
 
 /** The dashboard's compact view of one row, with farm plans generated in the page. */
@@ -120,6 +117,8 @@ export interface RadarRow {
   implied_value_usd: number;
   growth_multiplier: number;
   maturity_multiplier: number;
+  reasons: string[];
+  farm_steps: string[];
 }
 
 /** A live-token protocol: it already trades, so the board shows the market's own value, not a model's. */
@@ -176,13 +175,20 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
 export function impliedValue(protocol: SnapshotProtocol, asOf: string, model: ModelConstants): { implied: number; growthPct: number; growthMult: number; maturityMult: number; age: number | null } {
   const age = ageDays(asOf, protocol.listed_at);
   const rawGrowth = finite(protocol.change_7d, 0);
-  const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
-  const growthMult = 1 + (growthPct / 100) * model.growth_weight;
+  const growthPct = rawGrowth;
+  const growthMult = protocol.change_7d === null ? 1 : 1 + model.growth_weight * Math.tanh(growthPct / model.growth_cap);
   const ageForModel = age ?? model.unknown_age_days;
-  const maturityMult = model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
+  const maturityMult = model.maturity_floor + (Math.max(ageForModel, 0) / (Math.max(ageForModel, 0) + model.maturity_days)) * model.maturity_range;
   const base = protocol.tvl_usd * model.base_multiple;
   const implied = Math.max(1, Math.round(base * growthMult * maturityMult));
   return { implied, growthPct, growthMult, maturityMult, age };
+}
+
+function scoreReasons(p: SnapshotProtocol, age: number | null, growthPct: number, growthMult: number, maturityMult: number): string[] {
+  const tvl = `$${(p.tvl_usd / 1e6).toFixed(1)}M TVL`;
+  const growth = p.change_7d === null ? '7d change unreported (neutral growth)' : `${growthPct >= 0 ? '+' : ''}${growthPct.toFixed(1)}% in 7d`;
+  const days = age === null ? 'age unavailable (neutral maturity)' : `${age} days with no token`;
+  return [tvl, growth, days, `growth ×${growthMult.toFixed(2)}, maturity ×${maturityMult.toFixed(2)}`];
 }
 
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
@@ -231,7 +237,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
 
   const scored = [...chosen.values()].map((p) => {
     const { implied, growthPct, growthMult, maturityMult, age } = impliedValue(p, snapshot.as_of, model);
-    return { p, implied, growthPct, growthMult, maturityMult, age };
+    return { p, implied, growthPct, growthMult, maturityMult, age, reasons: scoreReasons(p, age, growthPct, growthMult, maturityMult) };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
   return scored.map((s, i) => ({
@@ -257,6 +263,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       age_days: s.age,
     },
     farm_steps: farmSteps(s.p, s.age).map(stepText),
+    reasons: s.reasons,
   }));
 }
 
@@ -384,6 +391,8 @@ export function radarRow(row: BoardRow): RadarRow {
     implied_value_usd: row.implied_value_usd,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
+    reasons: row.reasons,
+    farm_steps: row.farm_steps,
   };
 }
 
