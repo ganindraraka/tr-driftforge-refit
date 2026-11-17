@@ -102,7 +102,7 @@ export interface BoardRow {
   reasons: string[];
 }
 
-/** The dashboard's compact view of one row, with farm plans generated in the page. */
+/** The dashboard's view of one row, including the exact board plan and reasons. */
 export interface RadarRow {
   rank: number;
   slug: string;
@@ -298,63 +298,86 @@ function holdDaysFor(age: number | null): number {
   return 30;
 }
 
-/** The category's one action, in the words a farmer can follow. */
-function actionFor(p: SnapshotProtocol, capital: number, chain: string): string {
-  const c = (p.category ?? '').toLowerCase();
-  const name = p.name;
-  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) return `Supply $${capital} of USDC to ${name} on ${chain} and keep the position open.`;
-  if (c.includes('dex') || c.includes('yield') || c.includes('leveraged farm')) return `Provide $${capital} of liquidity to ${name}'s main pool on ${chain} and keep the position open.`;
-  if (c.includes('bridge')) return `Bridge $${capital} of USDC to ${chain} through ${name} and use the bridged funds in its app.`;
-  if (c.includes('staking') || c.includes('restak')) return `Stake $${capital} of the chain's staking asset through ${name} and keep the receipt.`;
-  if (c.includes('perpetual') || c.includes('derivative')) return `Deposit $${capital} of USDC as margin on ${name} and open one small hedge.`;
-  if (c.includes('prediction')) return `Fund $${capital} and place one market position on ${name}.`;
-  if (c.includes('curator') || c.includes('allocator')) return `Deposit $${capital} into a ${name} vault on ${chain} and keep the shares.`;
-  if (c.includes('stable')) return `Mint or deposit $${capital} of the stable asset through ${name} on ${chain}.`;
-  if (c.includes('rwa')) return `Mint $${capital} of the protocol's yield asset on ${chain} and hold it.`;
-  if (c.includes('insurance')) return `Buy $${capital} of cover from ${name} on ${chain} and keep the policy.`;
-  return `Deposit $${capital} of USDC into ${name} on ${chain} and keep the position open.`;
-}
-
-/**
- * A protocol's farm plan: six steps, each an action with a cost and a time. The plan is derived from
- * the protocol's own record (category, chains, TVL, age), never from a hand-written list of names.
+/** Category routes are suggested workflows, not claims about a protocol's points program.
+ * Every route has three category-specific actions, plus preparation and an exit check.
+ * Capital is a budget, not an eligibility minimum; supported assets must be checked in-app.
  */
 export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
-  const chain = chainOf(p);
-  const capital = capitalFor(p);
-  const hold = holdDaysFor(age);
-  const action = actionFor(p, capital, chain);
+  const chain = chainOf(p), capital = capitalFor(p), hold = holdDaysFor(age);
+  const c = (p.category ?? '').toLowerCase();
+  const step = (text: string, cost: string, time: string): FarmStep => ({ text, cost, time });
+  const gas = chain === 'Ethereum' ? '$5–25' : '$0.10–3';
+  const fee = `estimated ${gas} gas per onchain action; check the wallet quote`;
+  let route: FarmStep[];
+  if (/lend|collateral|cdp/.test(c)) route = [
+    step(`On ${p.name}, supply $${capital} of an accepted stablecoin on ${chain}; for a CDP use accepted collateral instead. Verify the asset and liquidation terms first.`, `$${capital} capital + ${fee}`, '15 minutes'),
+    step('If borrowing is supported, borrow no more than 10% of collateral value in an accepted stablecoin; skip borrowing if the rate or minimum size exceeds this budget.', `$${Math.round(capital * .1)} debt, variable interest shown in-app + ${fee}`, '10 minutes; monitor weekly'),
+    step(`Keep the supply for ${hold} days; inspect health factor and rates weekly, then repay any debt before withdrawing collateral.`, `variable borrow interest, capital locked + ${fee} to repay`, `${hold} days; 10 minutes weekly`),
+  ];
+  else if (/dex|liquidity manager/.test(c)) route = [
+    step(`Swap $${Math.round(capital / 2)} of an accepted asset in ${p.name} on ${chain}; cap slippage at 0.5% and reject an unfavorable quote.`, `up to $${(capital * .005).toFixed(2)} swap fee/slippage budget + ${fee}`, '10 minutes'),
+    step(`Add $${capital} total to a liquid two-asset pool, split equally by value; use a wide range if liquidity is concentrated and save the position identifier.`, `$${capital} capital; pool fees and impermanent loss exposure + ${fee}`, '15 minutes'),
+    step(`Check the pool weekly for ${hold} days, including whether the range is active; collect accrued fees only when they exceed the gas quote.`, `capital exposed to price divergence; ${fee} only if collecting`, `${hold} days; 10 minutes weekly`),
+  ];
+  else if (/bridge/.test(c)) route = [
+    step(`Quote a $${capital} transfer through ${p.name} to ${chain}; verify the destination asset contract and send a $10 test first.`, `$10 test capital, estimated $1–10 bridge fee + source gas`, '10–30 minutes; wait for finality'),
+    step(`After confirming receipt, bridge the remaining $${capital - 10} on the same verified route; stop if the fee quote exceeds $10.`, `$${capital - 10} capital + quoted bridge fee and gas`, '10–60 minutes; route dependent'),
+    step('Use $10 of received assets in a supported destination swap, then quote a return transfer and record both transaction hashes.', `$10 swap capital, up to $1 swap fee + destination gas; return fee quoted separately`, '15 minutes plus bridge finality'),
+  ];
+  else if (/stak|anchor btc|decentralized btc/.test(c)) route = [
+    step(`Acquire $${capital} of the supported staking or BTC asset for ${p.name} on ${chain}; verify any receipt token and withdrawal queue before depositing.`, `$${capital} capital, up to 0.5% swap spread + ${fee}`, '15 minutes'),
+    step('Deposit the asset into the staking interface; retain the receipt and avoid adding leverage or recursively depositing it.', `$${capital} remains exposed to slashing, custody or depeg risk + ${fee}`, '10 minutes; activation may take days'),
+    step(`Hold for ${hold} days and inspect rewards weekly; submit a small withdrawal request to understand the queue before a full exit.`, `variable reward fees; ${fee} for withdrawal request`, `${hold} days; withdrawal queue may add 1–21 days`),
+  ];
+  else if (/perpetual|derivative|options|synthetic|basis trading/.test(c)) route = [
+    step(`Fund ${p.name} on ${chain} with $${capital} of accepted margin; read contract size, funding and liquidation rules before trading.`, `$${capital} margin + ${fee}`, '15 minutes'),
+    step('If minimum size allows, open one position with at most $20 notional and at most 1× leverage; for options buy a contract with premium capped at $5. Skip if limits cannot be met.', 'up to $5 premium or trading loss budget; quoted trade fees and funding', '10 minutes; monitor until closed'),
+    step('Close the entire position after checking execution spread; verify there are no residual orders and withdraw unused margin. Do not create wash volume.', `realized P/L, funding and quoted close fee + ${fee}`, 'same day; 15 minutes to close and verify'),
+  ];
+  else if (/prediction/.test(c)) route = [
+    step(`Fund ${p.name} with $20 of its supported settlement asset on ${chain}; read one market's resolution source and expiry.`, `$20 capital + ${fee}`, '15 minutes'),
+    step('Buy no more than $5 of one outcome you understand using a limit order; record resolution conditions and avoid markets without exit liquidity.', '$5 maximum position loss + displayed trading fee', '10 minutes'),
+    step('Set a reminder for resolution, or sell the position before expiry if liquidity permits; redeem settled winnings only via the verified market page.', `up to $5 loss, quoted exit fee + ${fee}`, '10 minutes to exit; expiry can take days or months'),
+  ];
+  else if (/rwa|cedefi|otc/.test(c)) route = [
+    step(`Check ${p.name}'s investor restrictions, KYC, custody and redemption minimums before funding on ${chain}; skip if ineligible or minimums exceed $${capital}.`, '$0 research; identity verification only through verified issuer', '30 minutes; approval may take 1–5 business days'),
+    step(`If eligible, subscribe with $${capital} to a supported asset and save the receipt, NAV date and redemption terms. Do not assume a token allocation.`, `$${capital} capital, issuer subscription fee if any + ${fee}`, '20 minutes; settlement 1–5 business days'),
+    step(`Review NAV and issuer reports weekly for ${hold} days; submit redemption before the published cutoff and track cash settlement.`, `issuer management/redemption fees as quoted; capital illiquid until settlement`, `${hold} days plus published settlement delay`),
+  ];
+  else if (/stable|reserve currency/.test(c)) route = [
+    step(`Compare mint and redeem quotes for ${p.name}'s supported stable asset on ${chain}; inspect collateral and reject a quote over 0.5% away from its intended peg.`, '$0 to inspect; no transaction required', '15 minutes'),
+    step(`Mint or acquire $${capital} of the stable asset using accepted collateral; do not borrow against the resulting balance.`, `$${capital} capital, quoted mint/swap fee + ${fee}`, '15 minutes'),
+    step(`Hold for ${hold} days, check peg and redemption liquidity weekly, then redeem a $10 test before the remaining balance.`, `depeg exposure; quoted redeem fee + ${fee} per redemption`, `${hold} days; 10 minutes weekly; settlement per app`),
+  ];
+  else if (/yield|farm|curator|allocator|indexes|options vault/.test(c)) route = [
+    step(`Compare ${p.name}'s vault assets, strategy, management fee and withdrawal lock on ${chain}; choose an unlevered vault only if its minimum is within $${capital}.`, '$0 research; no approval needed', '20 minutes'),
+    step(`Deposit $${capital} of an accepted asset into that vault and save the share balance; avoid auto-leverage and check the allowance matches the deposit.`, `$${capital} capital + ${fee}; ongoing vault fees per terms`, '15 minutes'),
+    step(`Keep shares for ${hold} days, review share price and strategy weekly, and request a $10 test redemption before exiting the rest.`, `strategy losses possible; quoted performance/exit fees + ${fee}`, `${hold} days; 10 minutes weekly; withdrawal lock per vault`),
+  ];
+  else if (/insurance/.test(c)) route = [
+    step(`Find a ${p.name} cover product matching an existing position on ${chain}; read exclusions, claim evidence and deductible before paying.`, '$0 research; use an existing exposure', '20 minutes'),
+    step('Request a 30-day cover quote for $100 of exposure; buy only if the total premium is under $5 and the policy actually covers that exposure.', `up to $5 non-refundable premium + ${fee}`, '15 minutes; 30-day policy'),
+    step('Save the policy ID and evidence of the covered position; review expiry and let the policy lapse if the exposure has ended.', '$0 review; further premiums only if renewing', '10 minutes now and at 30-day expiry'),
+  ];
+  else if (/launchpad|nft marketplace/.test(c)) route = [
+    step(`Inspect ${p.name}'s active listings on ${chain}, participation terms and exit liquidity; choose only a listing with a purchase price below $10.`, '$0 research; no purchase if no suitable listing', '20 minutes'),
+    step('If eligible, make one genuine purchase capped at $10; save the asset or allocation receipt and do not trade between your own wallets.', `up to $10 at risk, quoted marketplace fee + ${fee}`, '15 minutes; allocation settlement per listing'),
+    step('Review the received asset and any vesting terms weekly; cancel stale orders and list for sale only if you actually intend to sell.', `quoted listing/sale fees + ${fee}; asset may be illiquid`, '10 minutes weekly for 30 days'),
+  ];
+  else if (/payments|card issuer/.test(c)) route = [
+    step(`Check ${p.name}'s supported payment asset, region and refund policy on ${chain}; use a verified merchant or a recipient you actually owe.`, '$0 research; do not pay a setup fee without reviewing terms', '15 minutes'),
+    step('Fund a $10 balance and make one real payment of at most $5; save the receipt and verify the recipient received the correct asset.', `$5 actual spending + quoted service fee and ${fee}`, '10 minutes plus settlement'),
+    step('Reconcile the payment with your receipt, withdraw the unused balance and inspect any recurring payment permissions.', `withdrawal fee as quoted + ${fee}`, '10 minutes; settlement per service'),
+  ];
+  else route = [
+    step(`Inspect ${p.name}'s documentation for its ${p.category ?? 'unclassified'} product on ${chain}; identify a supported, reversible action and read fees before connecting. Do not assume it accepts deposits.`, '$0 research', '20 minutes'),
+    step(`If a suitable action exists, make one small genuine transaction with at most $${Math.min(capital, 50)} at risk; verify the asset, approval and result in the wallet. Otherwise stop after research.`, `up to $${Math.min(capital, 50)} capital + quoted product fee and ${fee}`, '15 minutes; settlement per product'),
+    step(`Review the position or activity receipt weekly for ${hold} days; test the documented exit and stop if the product has no transparent redemption path.`, `capital may be illiquid; quoted exit fee + ${fee}`, `${hold} days; 10 minutes weekly; exit delay per documentation`),
+  ];
   return [
-    {
-      text: `Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.`,
-      cost: 'under $3 of gas for the first transaction',
-      time: '5 minutes',
-    },
-    {
-      text: action,
-      cost: `$${capital} of capital and about $${capital >= 150 ? 8 : 4} of gas`,
-      time: '15 minutes to set up',
-    },
-    {
-      text: `Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.`,
-      cost: 'about $2 of gas a week',
-      time: '10 minutes a week',
-    },
-    {
-      text: `Hold the position for at least ${hold} days so the activity is counted in more than one snapshot.`,
-      cost: `the $${capital} stays in the position`,
-      time: `${hold} days`,
-    },
-    {
-      text: `Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes.`,
-      cost: 'no fee to check, and never pay to claim',
-      time: '10 minutes',
-    },
-    {
-      text: `Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.`,
-      cost: 'nothing but the log',
-      time: '5 minutes',
-    },
+    step(`Prepare a dedicated wallet for ${p.name} on ${chain}; verify the app through official documentation, check eligibility and fund only the planned budget plus native gas.`, `$${capital} suggested capital budget, not an eligibility threshold; estimated ${gas} gas reserve`, '10–20 minutes; bridge funding can take longer'),
+    ...route,
+    step('Check the verified app for any published rewards terms; log transaction hashes and fees. On exit, withdraw remaining funds and revoke unnecessary approvals. Never assume activity qualifies for an allocation.', `$0 to check and log; ${fee} for withdrawal or revocation`, '15 minutes plus any withdrawal queue'),
   ];
 }
 
@@ -375,7 +398,7 @@ export function liveRows(snapshot: Snapshot): LiveRow[] {
     }));
 }
 
-/** A board row's compact form for data.js, with the farm plan generated in the page. */
+/** A board row's form for data.js; plans are serialized once, never reimplemented in the page. */
 export function radarRow(row: BoardRow): RadarRow {
   return {
     rank: row.rank,
