@@ -1,23 +1,78 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Token Radar · The pre-token field</title>
-<link rel="stylesheet" href="app.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Token Radar · The pre-token field</title>
+  <link rel="stylesheet" href="app.css">
 </head>
 <body>
-<a class="skip" href="#results">Skip to board</a>
-<main>
-<header><b class="brand">◉ TOKEN RADAR</b><span id="stamp"></span></header>
-<section class="hero"><div><div class="eyebrow">RESEARCH TERMINAL / 01</div><h1>The pre-token field.</h1><p>Find the operating protocols before the token. A snapshot-based valuation lens, with an actionable route into every position.</p></div><div id="stats" class="stats"></div></section>
-<section class="model"><b>ONE MODEL. EVERY PROTOCOL.</b><p id="formula"></p><small>TVL is the capital base; 0.25× is our assumed baseline, not a market calibration. Growth rewards momentum without letting a single week dominate. Listing age is a proxy for operating history, not proof of continuous token absence. No launch or allocation is promised.</small></section>
-<section class="controls" aria-label="Board filters"><label>Search<input id="q" type="search" placeholder="Protocol, category, chain…"></label><label>Category<select id="category"></select></label><label>Chain<select id="chain"></select></label><label>Universe<select id="universe"><option value="pre">No token recorded</option><option value="live">Token recorded · reference</option></select></label><button id="reset">Reset filters</button></section>
-<div class="board-head"><h2 id="board-title">Ranked field</h2><span id="count" role="status"></span></div>
-<section id="results" tabindex="-1" class="table-wrap"><table><caption>No token recorded in the snapshot. Select a protocol for its valuation and farm plan.</caption><thead id="head"></thead><tbody id="rows"></tbody></table><p id="empty" hidden>No matches. Reset the filters to return to the full field.</p></section>
-<footer>DefiLlama sealed snapshot · No live feeds · Implied values are research estimates in USD. Rank stays fixed when you sort or filter.</footer>
-</main>
-<dialog id="detail" aria-labelledby="detail-title"><div class="detail-top"><span class="eyebrow">PROTOCOL DOSSIER</span><button id="close">Close ×</button></div><div id="detail-body"></div></dialog>
-<script src="../data.js"></script>
-<script src="app.js"></script>
-</body></html>
+  <a class="skip" href="#results">Skip to board</a>
+
+  <main>
+    <!-- Masthead: brand on the left, the sealed snapshot date on the right. -->
+    <header>
+      <b class="brand">◉ TOKEN RADAR</b>
+      <span id="stamp"></span>
+    </header>
+
+    <!-- Hero: what this radar is, plus the four headline counts. -->
+    <section class="hero">
+      <div>
+        <div class="eyebrow">RESEARCH TERMINAL / 01</div>
+        <h1>The pre-token field.</h1>
+        <p>Find the operating protocols before the token. A snapshot-based valuation lens, with an actionable route into every position.</p>
+      </div>
+      <div id="stats" class="stats"></div>
+    </section>
+
+    <!-- The one valuation model, stated plainly so every rank is auditable. -->
+    <section class="model">
+      <b>ONE MODEL. EVERY PROTOCOL.</b>
+      <p id="formula"></p>
+      <small>TVL is the capital base; 0.25× is our assumed baseline, not a market calibration. Growth rewards momentum without letting a single week dominate. Listing age is a proxy for operating history, not proof of continuous token absence. No launch or allocation is promised.</small>
+    </section>
+
+    <!-- Filters: free text, category, chain, and which universe to show. -->
+    <section class="controls" aria-label="Board filters">
+      <label>Search<input id="q" type="search" placeholder="Protocol, category, chain…"></label>
+      <label>Category<select id="category"></select></label>
+      <label>Chain<select id="chain"></select></label>
+      <label>Universe<select id="universe">
+        <option value="pre">No token recorded</option>
+        <option value="live">Token recorded · reference</option>
+      </select></label>
+      <button id="reset">Reset filters</button>
+    </section>
+
+    <div class="board-head">
+      <h2 id="board-title">Ranked field</h2>
+      <span id="count" role="status"></span>
+    </div>
+
+    <!-- The board itself. Rows are built by app.js from data.js. -->
+    <section id="results" tabindex="-1" class="table-wrap">
+      <table>
+        <caption>No token recorded in the snapshot. Select a protocol for its valuation and farm plan.</caption>
+        <thead id="head"></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <p id="empty" hidden>No matches. Reset the filters to return to the full field.</p>
+    </section>
+
+    <footer>DefiLlama sealed snapshot · No live feeds · Implied values are research estimates in USD. Rank stays fixed when you sort or filter.</footer>
+  </main>
+
+  <!-- Per-protocol dossier, opened from any row. -->
+  <dialog id="detail" aria-labelledby="detail-title">
+    <div class="detail-top">
+      <span class="eyebrow">PROTOCOL DOSSIER</span>
+      <button id="close">Close ×</button>
+    </div>
+    <div id="detail-body"></div>
+  </dialog>
+
+  <script src="../data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
