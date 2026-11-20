@@ -1040,7 +1040,45 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
     `final tally vs 4% T-bill: compute annualized return on $${capital} deployed over ${hold} days; compare to $${bench4pc}/yr`,
   );
 
-  return [prepStep, ...steps, exitStep];
+  const monitorStep = makeStep(
+    `Record ${p.name}'s TVL and 7-day change on day 1, then re-read them every week on ${chain}; write the numbers down so a drawdown is visible early.`,
+    '$0 to record; a few minutes of attention',
+    '10 min on day 1; 10 min weekly',
+    `withdraw if TVL falls more than 25% from the day-1 reading, or >${
+      (p.tvl_usd * 0.25 / 1e6).toFixed(1)
+    }M; do not average down`,
+    'weekly cadence, same weekday',
+    `monitoring protects the 4% T-bill baseline on $${capital}: a 25% TVL drawdown typically precedes a value markdown`,
+  );
+
+  const approvalStep = makeStep(
+    `Inspect and trim wallet approvals for ${p.name}; revoke any allowance larger than the position or older than the plan.`,
+    'gas only for any revocation + ${fee}',
+    '10 min; repeat monthly',
+    'revoke every approval you did not intend to keep',
+    'monthly audit, and immediately after exit',
+    `approval hygiene is what keeps $${capital} from being drained; the 4% T-bill has no smart-contract risk`,
+  );
+
+  const gasStep = makeStep(
+    `Batch any remaining ${chain} actions into a single session when gas is cheap; skip an action whose network fee exceeds 2% of the position.`,
+    'estimated ${gas} gas per action, batched',
+    '15 min once',
+    'abort a transaction if the quoted fee exceeds 2% of the position',
+    'once per accrual, typically month-end',
+    `every dollar saved on gas is a dollar of 4% T-bill-beating return on $${capital}`,
+  );
+
+  const midBenchmarkStep = makeStep(
+    `At the midpoint of the ${hold}-day hold, compare realized rewards to a 4% T-bill on $${capital} pro rata; keep going only if ahead.`,
+    '$0 to compute; uses figures already in the wallet',
+    '15 min once at midpoint',
+    `exit at the midpoint if the run-rate is below 4% T-bill`,
+    'once at midpoint, then daily near the end',
+    `midpoint test: 4% T-bill on $${capital} over ${hold} days is ~$${bench4pc}; realized rewards must beat it`,
+  );
+
+  return [prepStep, ...steps, monitorStep, approvalStep, gasStep, midBenchmarkStep, exitStep];
 }
 
 // ---------------------------------------------------------------- the live set
