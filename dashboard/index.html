@@ -10,67 +10,131 @@
   <a class="skip" href="#results">Skip to board</a>
 
   <main>
-    <!-- Masthead: brand on the left, the sealed snapshot date on the right. -->
     <header>
       <b class="brand">◉ TOKEN RADAR</b>
       <span id="stamp"></span>
     </header>
 
-    <!-- Hero: what this radar is, plus the four headline counts. -->
     <section class="hero">
       <div>
         <div class="eyebrow">RESEARCH TERMINAL / 01</div>
         <h1>The pre-token field.</h1>
-        <p>Find the operating protocols before the token. A snapshot-based valuation lens, with an actionable route into every position.</p>
+        <p>Find the operating protocols before the token. A snapshot-based valuation lens with fit provenance, honest uncertainty ranges, and an actionable route into every position.</p>
       </div>
       <div id="stats" class="stats"></div>
     </section>
 
-    <!-- The one valuation model, stated plainly so every rank is auditable. -->
-    <section class="model">
-      <b>ONE MODEL. EVERY PROTOCOL.</b>
+    <!-- View tabs -->
+    <nav class="tabs" aria-label="Views">
+      <button id="tab-board" data-view="board" class="active" title="Ranked board · pre-token protocols by implied value">Board</button>
+      <button id="tab-evidence" data-view="evidence" title="Out-of-sample evidence · validation · model report">Evidence</button>
+      <button id="tab-detail" data-view="detail" style="display:none">Detail</button>
+    </nav>
+
+    <!-- MODEL STATEMENT -->
+    <section class="model" id="model-box">
+      <b>FITTED MODEL. EVERY PROTOCOL.</b>
       <p id="formula"></p>
-      <small>TVL is the capital base; 0.25× is our assumed baseline, not a market calibration. Growth rewards momentum without letting a single week dominate. Listing age is a proxy for operating history, not proof of continuous token absence. No launch or allocation is promised.</small>
+      <small>Size curve is a log-log OLS fit on the snapshot's own traded protocols (mcap/TVL ratio). Launch odds are logistic regression (P(token) ~ log(TVL) + age). Growth is bounded via tanh; maturity is a saturating age curve. A term is kept only if it lowers the held-out miss in both tests (leave-one-out AND walk-forward). ± bootstrap s.e. (200 refits).</small>
     </section>
 
-    <!-- Filters: free text, category, chain, and which universe to show. -->
-    <section class="controls" aria-label="Board filters">
-      <label>Search<input id="q" type="search" placeholder="Protocol, category, chain…"></label>
-      <label>Category<select id="category"></select></label>
-      <label>Chain<select id="chain"></select></label>
-      <label>Universe<select id="universe">
-        <option value="pre">No token recorded</option>
-        <option value="live">Token recorded · reference</option>
-      </select></label>
-      <button id="reset">Reset filters</button>
+    <!-- BOARD VIEW: filters + KPI strip + table -->
+    <section id="view-board">
+      <div class="kpi-strip" id="kpi-strip"></div>
+
+      <section class="controls" aria-label="Board filters">
+        <label>Search<input id="q" type="search" placeholder="Protocol, category, chain…"></label>
+        <label>Category<select id="category"></select></label>
+        <label>Chain<select id="chain"></select></label>
+        <label>Universe<select id="universe">
+          <option value="pre">No token recorded</option>
+          <option value="live">Token recorded · reference</option>
+        </select></label>
+        <label class="chk"><input type="checkbox" id="watchlist-only"> Watchlist only</label>
+        <button id="reset">Reset</button>
+      </section>
+
+      <div class="board-head">
+        <h2 id="board-title">Ranked field</h2>
+        <span id="count" role="status"></span>
+      </div>
+
+      <section id="results" tabindex="-1" class="table-wrap">
+        <table>
+          <caption>No token recorded at snapshot time. Select a protocol for its full dossier.</caption>
+          <thead id="head"></thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <p id="empty" hidden>No matches. Reset the filters to return to the full field.</p>
+      </section>
     </section>
 
-    <div class="board-head">
-      <h2 id="board-title">Ranked field</h2>
-      <span id="count" role="status"></span>
-    </div>
-
-    <!-- The board itself. Rows are built by app.js from data.js. -->
-    <section id="results" tabindex="-1" class="table-wrap">
-      <table>
-        <caption>No token recorded in the snapshot. Select a protocol for its valuation and farm plan.</caption>
-        <thead id="head"></thead>
-        <tbody id="rows"></tbody>
-      </table>
-      <p id="empty" hidden>No matches. Reset the filters to return to the full field.</p>
+    <!-- DETAIL VIEW -->
+    <section id="view-detail" style="display:none">
+      <button class="back-btn" id="back-detail">← Back to board</button>
+      <div id="detail-body"></div>
     </section>
 
-    <footer>DefiLlama sealed snapshot · No live feeds · Implied values are research estimates in USD. Rank stays fixed when you sort or filter.</footer>
+    <!-- EVIDENCE VIEW: out-of-sample panel + filtered board -->
+    <section id="view-evidence" style="display:none">
+      <h2 class="evidence-h2">OUT-OF-SAMPLE EVIDENCE</h2>
+
+      <div class="evidence-grid" id="evidence-grid"></div>
+
+      <div class="evidence-section">
+        <h3>Per-Term Fit Table</h3>
+        <p class="rule-statement"><em>"a term is kept only if it lowers the held-out miss in both tests"</em> — leave-one-out AND walk-forward.</p>
+        <div class="table-wrap" style="max-height:320px">
+          <table>
+            <thead><tr><th>Term</th><th>Fitted coefficient</th><th>Kept</th></tr></thead>
+            <tbody id="term-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="evidence-section">
+        <h3>Tested, Not Used</h3>
+        <p class="muted-text">Variables evaluated and deliberately dropped to prevent overfit. Including them raised the held-out miss in at least one validation method.</p>
+        <div id="tested-not-used" class="chip-row"></div>
+      </div>
+
+      <div class="evidence-section">
+        <h3>± Bootstrap Standard Error (200 refits)</h3>
+        <p id="bootstrap-se-text" class="num-text"></p>
+      </div>
+
+      <hr class="evidence-divider">
+
+      <h2 class="evidence-h2">FILTERED BOARD</h2>
+
+      <!-- Filter chips: Farm / Marginal / Skip counts -->
+      <div class="chip-row" id="verdict-chips"></div>
+
+      <section class="controls" aria-label="Filtered board filters">
+        <label>Search<input id="eq" type="search" placeholder="Protocol, category, chain…"></label>
+        <label>Category<select id="ecategory"></select></label>
+        <label>Chain<select id="echain"></select></label>
+        <label class="chk"><input type="checkbox" id="ewatchlist-only"> Watchlist only</label>
+        <button id="ereset">Reset</button>
+      </section>
+
+      <div class="board-head">
+        <h2 id="eboard-title">Filtered field</h2>
+        <span id="ecount" role="status"></span>
+      </div>
+
+      <section class="table-wrap" style="max-height:480px">
+        <table>
+          <caption>Filtered pre-token field with evidence columns. Click any row to open its dossier.</caption>
+          <thead id="ehead"></thead>
+          <tbody id="erows"></tbody>
+        </table>
+        <p id="eempty" hidden>No matches. Reset the filters.</p>
+      </section>
+    </section>
+
+    <footer>DefiLlama sealed snapshot · No live feeds · Implied values are research estimates in USD. Rank stays fixed when you sort or filter. Size curve and odds model fitted on snapshot peers only.</footer>
   </main>
-
-  <!-- Per-protocol dossier, opened from any row. -->
-  <dialog id="detail" aria-labelledby="detail-title">
-    <div class="detail-top">
-      <span class="eyebrow">PROTOCOL DOSSIER</span>
-      <button id="close">Close ×</button>
-    </div>
-    <div id="detail-body"></div>
-  </dialog>
 
   <script src="../data.js"></script>
   <script src="app.js"></script>
