@@ -633,18 +633,20 @@ function wfSizeValidate(peers: FitPeer[]): { miss: number; pctIn50: number; pctI
 
 // ---------------------------------------------------------------- odds validation
 
-/** Brier score for odds model on the full protocol set. */
+/** Brier score of the odds model across every protocol that carries TVL. */
 function oddsBrier(protocols: SnapshotProtocol[], asOf: string, oddsCoeffs: number[]): number {
-  let sum = 0, count = 0;
+  let total = 0;
+  let scored = 0;
   for (const p of protocols) {
     if (p.tvl_usd <= 0) continue;
-    const actual = (p.mcap_usd != null && p.mcap_usd > 0) || p.gecko_id != null || p.symbol != null ? 1 : 0;
+    const hasToken = (p.mcap_usd != null && p.mcap_usd > 0) || p.gecko_id != null || p.symbol != null;
+    const observed = hasToken ? 1 : 0;
     const age = ageDays(asOf, p.listed_at);
-    const pred = launchProb(Math.log(p.tvl_usd), age !== null ? age / 365 : 2, oddsCoeffs);
-    sum += (pred - actual) ** 2;
-    count++;
+    const probability = launchProb(Math.log(p.tvl_usd), age !== null ? age / 365 : 2, oddsCoeffs);
+    total += (probability - observed) ** 2;
+    scored++;
   }
-  return count > 0 ? sum / count : 0;
+  return scored > 0 ? total / scored : 0;
 }
 
 // ---------------------------------------------------------------- the multipliers (existing, preserved)
@@ -757,18 +759,20 @@ function bySlug(protocols: SnapshotProtocol[]): Map<string, SnapshotProtocol> {
 
 // ---------------------------------------------------------------- farm plans (upgraded)
 
-/** Render one step as a single string within the gate's 20..600 characters. */
+/** Render one step as a single string, kept inside the gate's 20..600 characters. */
 export function stepText(text: string, cost: string, time: string): string {
-  let s = `${text} | Cost: ${cost}. | Time: ${time}.`;
-  if (s.length > 600) s = `${s.slice(0, 596)}...`;
-  if (s.length < 20) s = `${s} Hold the position and check the protocol's own page.`;
-  return s;
+  let rendered = `${text} | Cost: ${cost}. | Time: ${time}.`;
+  if (rendered.length > 600) rendered = `${rendered.slice(0, 596)}...`;
+  if (rendered.length < 20) rendered = `${rendered} Hold the position and check the protocol's own page.`;
+  return rendered;
 }
 
+/** The chain a protocol runs on, or a neutral phrase when the snapshot omits it. */
 function chainOf(p: SnapshotProtocol): string {
   return p.chains.length > 0 ? p.chains[0]! : 'its main chain';
 }
 
+/** A capital budget sized to TVL, never an eligibility threshold. */
 function capitalFor(p: SnapshotProtocol): number {
   if (p.tvl_usd >= 5_000_000_000) return 250;
   if (p.tvl_usd >= 1_000_000_000) return 150;
@@ -776,6 +780,7 @@ function capitalFor(p: SnapshotProtocol): number {
   return 50;
 }
 
+/** A hold horizon derived from the protocol's age, conservative while young. */
 function holdDaysFor(age: number | null): number {
   if (age === null) return 30;
   if (age < 180) return 60;
