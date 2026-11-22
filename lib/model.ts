@@ -1143,24 +1143,29 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
 
 // ---------------------------------------------------------------- the live set
 
+/**
+ * Already-tokenized protocols, ranked by market cap then TVL. These sit apart
+ * from the radar's pre-token board: they are context, not candidates.
+ */
 export function liveRows(snapshot: Snapshot): LiveRow[] {
-  return snapshot.protocols
-    .filter((p) => !isPreToken(p) && p.category !== 'CEX')
-    .sort((a, b) => (b.mcap_usd ?? 0) - (a.mcap_usd ?? 0) || b.tvl_usd - a.tvl_usd)
-    .slice(0, LIVE_ROWS)
-    .map((p) => ({
-      slug: p.slug,
-      name: p.name,
-      category: p.category,
-      chains: p.chains,
-      tvl_usd: p.tvl_usd,
-      mcap_usd: p.mcap_usd,
-      change_7d: p.change_7d,
-    }));
+  const tokenized = snapshot.protocols.filter((p) => !isPreToken(p) && p.category !== 'CEX');
+  const ranked = tokenized.sort(
+    (a, b) => (b.mcap_usd ?? 0) - (a.mcap_usd ?? 0) || b.tvl_usd - a.tvl_usd,
+  );
+  return ranked.slice(0, LIVE_ROWS).map((p) => ({
+    slug: p.slug,
+    name: p.name,
+    category: p.category,
+    chains: p.chains,
+    tvl_usd: p.tvl_usd,
+    mcap_usd: p.mcap_usd,
+    change_7d: p.change_7d,
+  }));
 }
 
 // ---------------------------------------------------------------- the board (upgraded)
 
+/** Rank the pre-token field: watchlist first, then early protocols by implied value. */
 export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): BoardRow[] {
   const index = bySlug(snapshot.protocols);
   const peers = buildFitPeers(snapshot.protocols, snapshot.as_of);
@@ -1168,11 +1173,11 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   const oddsCoeffs = fitOddsModel(snapshot.protocols, snapshot.as_of);
   const boot = bootstrap(peers, snapshot.protocols, snapshot.as_of, 200);
 
+  // Watchlist slugs always take a row, whether or not they clear the floor.
   const chosen = new Map<string, SnapshotProtocol>();
-
   for (const slug of snapshot.watchlist) {
-    const p = index.get(slug);
-    if (p !== undefined) chosen.set(slug, p);
+    const hit = index.get(slug);
+    if (hit !== undefined) chosen.set(slug, hit);
   }
 
   const early = snapshot.protocols
