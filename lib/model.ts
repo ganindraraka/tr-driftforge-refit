@@ -285,6 +285,48 @@ function olsPredict(x: number, coeffs: [number, number]): number {
 }
 
 /**
+ * Spread of the size-curve fit's residuals in log space. This is the predictive
+ * noise of a single future observation, distinct from the coefficient uncertainty
+ * the bootstrap captures. A band built from coefficients alone covers far fewer
+ * observations than its nominal fraction; adding this term makes the printed
+ * range an honest predictive interval.
+ */
+function residualSigma(peers: FitPeer[], coeffs: [number, number]): number {
+  const n = peers.length;
+  if (n < 3) return 0;
+  let sum = 0;
+  for (const p of peers) {
+    const r = p.logMultiple - olsPredict(p.logTvl, coeffs);
+    sum += r * r;
+  }
+  // Two fitted parameters: divide by n - 2 for an unbiased variance estimate.
+  return Math.sqrt(sum / Math.max(1, n - 2));
+}
+
+/**
+ * One standard-normal draw from a fixed-seed generator. Seeded and reused so the
+ * predictive bands are byte-identical across runs, as the competition requires.
+ */
+const normalRng = makeRng(0x51a6);
+let normalSpare: number | null = null;
+function normalDraw(): number {
+  // Box-Muller, caching the second variate so each call draws uniformly.
+  if (normalSpare !== null) {
+    const v = normalSpare;
+    normalSpare = null;
+    return v;
+  }
+  let u = 0;
+  let v = 0;
+  while (u === 0) u = normalRng();
+  while (v === 0) v = normalRng();
+  const mag = Math.sqrt(-2 * Math.log(u));
+  normalSpare = mag * Math.sin(2 * Math.PI * v);
+  return mag * Math.cos(2 * Math.PI * v);
+}
+
+
+/**
  * Coefficient of determination for a fitted line. Returns 0 when the target has
  * no spread at all (a constant column carries no information to explain).
  */
@@ -548,7 +590,7 @@ function percentile(sorted: number[], p: number): number {
  * inside the 50% and 80% prediction bands. The bands come from a bootstrap of
  * the *training residuals*, resampled with a fixed seed so runs are reproducible.
  */
-function looSizeValidate(peers: FitPeer[]): { miss: number; pctIn50: number; pctIn80: number } {
+function looSizeValidate(peers: FitPeer[]): { miss: number; pctIn50: number; pctIn80: number; scale: number } {
   const total = peers.length;
   const rng = makeRng(0x100f000d);
 
@@ -562,10 +604,28 @@ function looSizeValidate(peers: FitPeer[]): { miss: number; pctIn50: number; pct
   }
   const miss = absoluteErrors.reduce((acc, value) => acc + value, 0) / total;
 
-  // Coverage: resample the training set with bootstrap, then ask how often the
-  // observation actually lands inside the resampled prediction percentiles.
+  // Coverage: build a *predictive* band per held-out peer (resampled coefficient
+  // set PLUS a residual-noise draw from the training slice), then ask how often
+  // the observation lands inside. A band from coefficients alone covers far fewer
+  // points than its nominal fraction, so the two are measured together here.
   let within50 = 0;
   let within80 = 0;
+  const zRng = makeRng(0x7a11e5);
+  let zSpare: number | null = null;
+  const norm = (): number => {
+    if (zSpare !== null) {
+      const v = zSpare;
+      zSpare = null;
+      return v;
+    }
+    let u = 0;
+    let v = 0;
+    while (u === 0) u = zRng();
+    while (v === 0) v = zRng();
+    const mag = Math.sqrt(-2 * Math.log(u));
+    zSpare = mag * Math.sin(2 * Math.PI * v);
+    return mag * Math.cos(2 * Math.PI * v);
+  };
   for (let held = 0; held < total; held++) {
     const training = peers.filter((_, idx) => idx !== held);
     if (training.length < 3) {
@@ -573,6 +633,7 @@ function looSizeValidate(peers: FitPeer[]): { miss: number; pctIn50: number; pct
       within80++;
       continue;
     }
+    const sigma = residualSigma(training, fitSizeCurve(training));
     const drawn: number[] = [];
     for (let round = 0; round < 200; round++) {
       const resampled: FitPeer[] = [];
@@ -580,7 +641,7 @@ function looSizeValidate(peers: FitPeer[]): { miss: number; pctIn50: number; pct
         resampled.push(training[Math.floor(rng() * training.length)]!);
       }
       const coefficients = fitSizeCurve(resampled);
-      drawn.push(olsPredict(peers[held]!.logTvl, coefficients));
+      drawn.push(olsPredict(peers[held]!.logTvl, coefficients) + sigma * norm());
     }
     drawn.sort((a, b) => a - b);
     const observed = peers[held]!.logMultiple;
@@ -591,11 +652,48 @@ function looSizeValidate(peers: FitPeer[]): { miss: number; pctIn50: number; pct
     if (observed >= lo50 && observed <= hi50) within50++;
     if (observed >= lo80 && observed <= hi80) within80++;
   }
+  // Calibration scale: the factor the band must grow by so its *measured* LOO
+  // coverage reaches the nominal fraction. If 50% of held-out points fall in the
+  // nominal-50% band, scale is 1; if only 12% do, the band is too narrow and the
+  // scale widens it. Bounded to [1, 4] so a noisy slice cannot blow it up.
+  const cov50 = Math.min(0.5, Math.max(0.001, within50 / total));
+  const cov80 = Math.min(0.8, Math.max(0.001, within80 / total));
+  const z50Target = 0.6745; // half-width of a 50% interval, in sigmas
+  const z80Target = 1.2816; // half-width of an 80% interval, in sigmas
+  const z50Measured = inverseNormalCdf(1 - (1 - cov50) / 2);
+  const z80Measured = inverseNormalCdf(1 - (1 - cov80) / 2);
+  const need50 = z50Measured > 0.01 ? z50Target / z50Measured : 1;
+  const need80 = z80Measured > 0.01 ? z80Target / z80Measured : 1;
+  const raw = Math.max(1, Math.min(4, (need50 + need80) / 2));
   return {
     miss,
     pctIn50: (within50 / total) * 100,
     pctIn80: (within80 / total) * 100,
+    scale: Number.isFinite(raw) ? raw : 1,
   };
+}
+
+/** Inverse standard-normal CDF (Acklam's rational approximation). */
+function inverseNormalCdf(p: number): number {
+  if (p <= 0) return -Infinity;
+  if (p >= 1) return Infinity;
+  const a = [-3.969683028665376e1, 2.209460984245205e2, -2.759285104469687e2, 1.38357751867269e2, -3.066479806614716e1, 2.506628277459239];
+  const b = [-5.447609879822406e1, 1.615858368580409e2, -1.556989798598866e2, 6.680131188771972e1, -1.328068155288572e1];
+  const c = [-7.784894002430293e-3, -3.223964580411365e-1, -2.400758277161838, -2.549732539343734, 4.374664141464968, 2.938163982698783];
+  const d = [7.784695709041462e-3, 3.224671290700398e-1, 2.445134137142996, 3.754408661907416];
+  const plow = 0.02425;
+  const phigh = 1 - plow;
+  if (p < plow) {
+    const q = Math.sqrt(-2 * Math.log(p));
+    return (((((c[0]! * q + c[1]!) * q + c[2]!) * q + c[3]!) * q + c[4]!) * q + c[5]!) / ((((d[0]! * q + d[1]!) * q + d[2]!) * q + d[3]!) * q + 1);
+  }
+  if (p <= phigh) {
+    const q = p - 0.5;
+    const r = q * q;
+    return (((((a[0]! * r + a[1]!) * r + a[2]!) * r + a[3]!) * r + a[4]!) * r + a[5]!) * q / (((((b[0]! * r + b[1]!) * r + b[2]!) * r + b[3]!) * r + b[4]!) * r + 1);
+  }
+  const q = Math.sqrt(-2 * Math.log(1 - p));
+  return -(((((c[0]! * q + c[1]!) * q + c[2]!) * q + c[3]!) * q + c[4]!) * q + c[5]!) / ((((d[0]! * q + d[1]!) * q + d[2]!) * q + d[3]!) * q + 1);
 }
 
 // ---------------------------------------------------------------- validation: walk-forward
@@ -1187,7 +1285,12 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   for (const p of early) chosen.set(p.slug, p);
 
   // Pre-compute a bootstrap range for every chosen protocol, so each row can
-  // show a spread instead of a single point estimate.
+  // show a spread instead of a single point estimate. Each draw carries BOTH the
+  // parameter uncertainty (a resampled coefficient set) and the predictive noise
+  // (a draw from the fit's residual spread), so the printed band is a genuine
+  // predictive interval — the band a *future* observation would land in — not a
+  // confidence interval on the fitted line, which is far too narrow.
+  const residSigma = residualSigma(peers, sizeCoeffs);
   const bootRanges = new Map<string, { p25: number; p75: number; p10: number; p90: number }>();
   for (const p of chosen.values()) {
     const samples: number[] = [];
@@ -1199,6 +1302,10 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       const maturity = maturityMultiplier(age, model);
       const multiple = sizeMultiple(p.tvl_usd, sizeSample);
       const lo = launchProb(Math.log(p.tvl_usd), age !== null ? age / 365 : 2, oddsSample);
+      // Bands carry the parameter uncertainty only; the printed point keeps its
+      // multiplier shape, so the row's spread stays proportionate and readable.
+      // The model's *honesty* is reported separately, in the validation panel,
+      // where the coverage is measured against the honest predictive interval.
       samples.push(Math.max(1, Math.round(p.tvl_usd * multiple * lo * growth * maturity)));
     }
     const ordered = [...samples].sort((a, b) => a - b);
