@@ -34,6 +34,7 @@ import { signedPct } from './lib/format.ts';
 import { summarizeBoard } from './lib/report-summary.ts';
 import { methodNotes, renderNotes } from './lib/notes.ts';
 import { limitsLine } from './lib/limits.ts';
+import { digestBoard } from './lib/digest.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
 
 // This module's own directory: the root of the shipped repository.
@@ -153,6 +154,7 @@ function main(): void {
   process.stderr.write(summarizeBoard(board).text + '\n');
   process.stderr.write(renderNotes(methodNotes(board, snapshot.protocols.length)) + '\n');
   process.stderr.write(limitsLine() + '\n');
+  process.stderr.write(digestBoard(board).line + '\n');
 
   // Publish the board and the page dataset, then the page and its screenshots,
   // then the dossier that seals them. The dossier is built last so it reads every
