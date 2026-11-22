@@ -1381,12 +1381,16 @@ export function buildReport(snapshot: Snapshot): ModelReport {
   };
 }
 
-/** Nearest priced peers: the 10 traded protocols with TVL closest to the target. */
+/**
+ * The ten traded peers whose TVL sits closest (in log space) to the target. Used
+ * by the detail view to show a protocol against its nearest priced neighbours.
+ */
 export function nearestPeers(
   targetTvl: number,
   targetCategory: string | null,
   peers: FitPeer[],
 ): PeerRow[] {
+  const targetLog = Math.log(targetTvl);
   return peers
     .map((p) => ({
       slug: p.slug,
@@ -1395,7 +1399,7 @@ export function nearestPeers(
       mcap_usd: Math.round(Math.exp(p.logTvl + p.logMultiple)),
       multiple: Math.exp(p.logMultiple),
       category: p.category,
-      dist: Math.abs(p.logTvl - Math.log(targetTvl)),
+      dist: Math.abs(p.logTvl - targetLog),
     }))
     .sort((a, b) => a.dist - b.dist)
     .slice(0, 10)
@@ -1406,6 +1410,7 @@ export function nearestPeers(
 
 // ---------------------------------------------------------------- assembly
 
+/** Flatten one board row into the lighter shape the dashboard data carries. */
 export function radarRow(boardRow: BoardRow): RadarRow {
   return {
     rank: boardRow.rank,
@@ -1433,16 +1438,17 @@ export function radarRow(boardRow: BoardRow): RadarRow {
   };
 }
 
+/** Assemble the ranked board and the page payload from one sealed snapshot. */
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
   board: BoardRow[];
   radar: RadarData;
 } {
   const board = buildBoard(snapshot, model);
   const live = liveRows(snapshot);
-  const early = board.filter((r) => !snapshot.watchlist.includes(r.slug)).length;
+  const earlyCount = board.filter((r) => !snapshot.watchlist.includes(r.slug)).length;
   const report = buildReport(snapshot);
   const peers = buildFitPeers(snapshot.protocols, snapshot.as_of);
-  // Collect peer rows for detail view (all priced peers)
+  // Every priced peer, for the detail view's neighbour table.
   const peerRows: PeerRow[] = peers.map((p) => ({
     slug: p.slug,
     name: p.name,
@@ -1460,7 +1466,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     model_version: MODEL_VERSION,
     watchlist_size: snapshot.watchlist.length,
     board_size: board.length,
-    early_size: early,
+    early_size: earlyCount,
     live_size: live.length,
     watchlist: [...snapshot.watchlist],
     rows: board.map(radarRow),
@@ -1473,6 +1479,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
 
 // ---------------------------------------------------------------- input parsing
 
+/** Parse and validate a snapshot document, or throw a SnapshotError. */
 export function parseSnapshot(text: string): Snapshot {
   let raw: unknown;
   try {
@@ -1481,18 +1488,18 @@ export function parseSnapshot(text: string): Snapshot {
     throw new SnapshotError('snapshot.json is not JSON');
   }
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new SnapshotError('snapshot.json is not a JSON object');
-  const o = raw as Record<string, unknown>;
-  if (typeof o.as_of !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(o.as_of)) throw new SnapshotError('snapshot.json has no as_of date');
-  if (typeof o.source !== 'string') throw new SnapshotError('snapshot.json has no source');
-  if (typeof o.floor_usd !== 'number' || !Number.isSafeInteger(o.floor_usd) || o.floor_usd <= 0) throw new SnapshotError('snapshot.json has no floor_usd');
-  if (!Array.isArray(o.protocols)) throw new SnapshotError('snapshot.json has no protocols array');
-  if (!Array.isArray(o.watchlist) || o.watchlist.some((s) => typeof s !== 'string')) throw new SnapshotError('snapshot.json has no watchlist of slugs');
+  const document = raw as Record<string, unknown>;
+  if (typeof document.as_of !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(document.as_of)) throw new SnapshotError('snapshot.json has no as_of date');
+  if (typeof document.source !== 'string') throw new SnapshotError('snapshot.json has no source');
+  if (typeof document.floor_usd !== 'number' || !Number.isSafeInteger(document.floor_usd) || document.floor_usd <= 0) throw new SnapshotError('snapshot.json has no floor_usd');
+  if (!Array.isArray(document.protocols)) throw new SnapshotError('snapshot.json has no protocols array');
+  if (!Array.isArray(document.watchlist) || document.watchlist.some((s) => typeof s !== 'string')) throw new SnapshotError('snapshot.json has no watchlist of slugs');
 
-  const protocols = o.protocols.map((v, i) => {
-    if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new SnapshotError(`snapshot.json protocol ${i} is not an object`);
-    const p = v as Record<string, unknown>;
+  const protocols = document.protocols.map((entry, index) => {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) throw new SnapshotError(`snapshot.json protocol ${index} is not an object`);
+    const p = entry as Record<string, unknown>;
     if (typeof p.slug !== 'string' || typeof p.name !== 'string' || typeof p.tvl_usd !== 'number' || !Number.isFinite(p.tvl_usd)) {
-      throw new SnapshotError(`snapshot.json protocol ${i} lacks a slug, name or TVL`);
+      throw new SnapshotError(`snapshot.json protocol ${index} lacks a slug, name or TVL`);
     }
     return {
       slug: p.slug,
@@ -1508,7 +1515,7 @@ export function parseSnapshot(text: string): Snapshot {
     };
   });
 
-  return { as_of: o.as_of, source: o.source, floor_usd: o.floor_usd, protocols, watchlist: o.watchlist as string[] };
+  return { as_of: document.as_of, source: document.source, floor_usd: document.floor_usd, protocols, watchlist: document.watchlist as string[] };
 }
 
 // ---------------------------------------------------------------- the gate
