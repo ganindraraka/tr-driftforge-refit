@@ -542,92 +542,114 @@ function percentile(sorted: number[], p: number): number {
 
 // ---------------------------------------------------------------- validation: leave-one-out
 
-/** Leave-one-out validation for the size curve. Returns mean absolute error and
- *  calibration percentages (how often the true value sits inside the 50% and 80%
- *  intervals produced by a seeded bootstrap of the training residuals). */
+/**
+ * Leave-one-out cross-validation for the size curve. Returns the mean absolute
+ * error on the held-out peer plus the share of held-out observations that fell
+ * inside the 50% and 80% prediction bands. The bands come from a bootstrap of
+ * the *training residuals*, resampled with a fixed seed so runs are reproducible.
+ */
 function looSizeValidate(peers: FitPeer[]): { miss: number; pctIn50: number; pctIn80: number } {
-  const N = peers.length;
+  const total = peers.length;
   const rng = makeRng(0x100f000d);
 
-  // Point estimate: hold each peer out once, fit on the rest, score the held-out one.
-  const errors: number[] = [];
-  for (let i = 0; i < N; i++) {
-    const train = peers.filter((_, j) => j !== i);
-    const coeffs = fitSizeCurve(train);
-    const pred = olsPredict(peers[i]!.logTvl, coeffs);
-    errors.push(Math.abs(pred - peers[i]!.logMultiple));
+  // Point estimate: hold one peer out, refit on the rest, score the omission.
+  const absoluteErrors: number[] = [];
+  for (let held = 0; held < total; held++) {
+    const training = peers.filter((_, idx) => idx !== held);
+    const coefficients = fitSizeCurve(training);
+    const predicted = olsPredict(peers[held]!.logTvl, coefficients);
+    absoluteErrors.push(Math.abs(predicted - peers[held]!.logMultiple));
   }
-  const miss = errors.reduce((a, b) => a + b, 0) / N;
+  const miss = absoluteErrors.reduce((acc, value) => acc + value, 0) / total;
 
-  // Calibration: for each held-out peer, resample its training set with a seeded
-  // bootstrap and record the distribution of the held-out prediction error. The
-  // true error is zero only if the interval covers the actual observation; here we
-  // measure how often the actual multiple lands inside the bootstrap prediction band.
-  let in50 = 0, in80 = 0;
-  for (let i = 0; i < N; i++) {
-    const train = peers.filter((_, j) => j !== i);
-    if (train.length < 3) { in50++; in80++; continue; }
-    const preds: number[] = [];
-    for (let b = 0; b < 200; b++) {
-      const resTrain: FitPeer[] = [];
-      for (let k = 0; k < train.length; k++) resTrain.push(train[Math.floor(rng() * train.length)]!);
-      const coeffs = fitSizeCurve(resTrain);
-      preds.push(olsPredict(peers[i]!.logTvl, coeffs));
+  // Coverage: resample the training set with bootstrap, then ask how often the
+  // observation actually lands inside the resampled prediction percentiles.
+  let within50 = 0;
+  let within80 = 0;
+  for (let held = 0; held < total; held++) {
+    const training = peers.filter((_, idx) => idx !== held);
+    if (training.length < 3) {
+      within50++;
+      within80++;
+      continue;
     }
-    preds.sort((a, b) => a - b);
-    const actual = peers[i]!.logMultiple;
-    const p25 = percentile(preds, 0.25);
-    const p75 = percentile(preds, 0.75);
-    const p10 = percentile(preds, 0.10);
-    const p90 = percentile(preds, 0.90);
-    if (actual >= p25 && actual <= p75) in50++;
-    if (actual >= p10 && actual <= p90) in80++;
+    const drawn: number[] = [];
+    for (let round = 0; round < 200; round++) {
+      const resampled: FitPeer[] = [];
+      for (let k = 0; k < training.length; k++) {
+        resampled.push(training[Math.floor(rng() * training.length)]!);
+      }
+      const coefficients = fitSizeCurve(resampled);
+      drawn.push(olsPredict(peers[held]!.logTvl, coefficients));
+    }
+    drawn.sort((a, b) => a - b);
+    const observed = peers[held]!.logMultiple;
+    const lo50 = percentile(drawn, 0.25);
+    const hi50 = percentile(drawn, 0.75);
+    const lo80 = percentile(drawn, 0.10);
+    const hi80 = percentile(drawn, 0.90);
+    if (observed >= lo50 && observed <= hi50) within50++;
+    if (observed >= lo80 && observed <= hi80) within80++;
   }
-  return { miss, pctIn50: (in50 / N) * 100, pctIn80: (in80 / N) * 100 };
+  return {
+    miss,
+    pctIn50: (within50 / total) * 100,
+    pctIn80: (within80 / total) * 100,
+  };
 }
 
 // ---------------------------------------------------------------- validation: walk-forward
 
-/** Walk-forward validation: sort by TVL, train on first 80%, test on last 20%. */
+/**
+ * Walk-forward validation. Sort the peers by TVL, train on the cheapest 80% and
+ * test on the richest 20% — the split a deployment would actually face. Returns
+ * the test-set mean absolute error and the same 50% / 80% coverage as the LOO
+ * path, both from a seeded residual bootstrap of the training slice.
+ */
 function wfSizeValidate(peers: FitPeer[]): { miss: number; pctIn50: number; pctIn80: number } {
-  const sorted = [...peers].sort((a, b) => a.logTvl - b.logTvl);
-  const N = sorted.length;
-  const split = Math.floor(N * 0.8);
-  if (split < 2 || N - split < 1) {
+  const ordered = [...peers].sort((a, b) => a.logTvl - b.logTvl);
+  const total = ordered.length;
+  const cut = Math.floor(total * 0.8);
+  if (cut < 2 || total - cut < 1) {
     return { miss: Infinity, pctIn50: 0, pctIn80: 0 };
   }
-  const train = sorted.slice(0, split);
-  const test = sorted.slice(split);
-  const coeffs = fitSizeCurve(train);
-  const errors = test.map((t) => Math.abs(olsPredict(t.logTvl, coeffs) - t.logMultiple));
-  const miss = errors.reduce((a, b) => a + b, 0) / test.length;
+  const training = ordered.slice(0, cut);
+  const testing = ordered.slice(cut);
+  const coefficients = fitSizeCurve(training);
+  const errors = testing.map((t) => Math.abs(olsPredict(t.logTvl, coefficients) - t.logMultiple));
+  const miss = errors.reduce((acc, value) => acc + value, 0) / testing.length;
 
-  // Calibration: bootstrap the training set (seeded, so the report is reproducible)
+  // Residual bootstrap over the training slice, seeded for reproducibility.
   const rng = makeRng(424242);
-  const resErrors: number[][] = [];
-  for (let b = 0; b < 200; b++) {
-    const resTrain: FitPeer[] = [];
-    for (let i = 0; i < split; i++) resTrain.push(train[Math.floor(rng() * split)]!);
-    const rc = fitSizeCurve(resTrain);
-    const re: number[] = [];
-    for (const t of test) re.push(olsPredict(t.logTvl, rc) - t.logMultiple);
-    resErrors.push(re);
+  const bootstrapErrors: number[][] = [];
+  for (let round = 0; round < 200; round++) {
+    const resampled: FitPeer[] = [];
+    for (let i = 0; i < cut; i++) {
+      resampled.push(training[Math.floor(rng() * cut)]!);
+    }
+    const resampledCoefficients = fitSizeCurve(resampled);
+    const row: number[] = [];
+    for (const t of testing) {
+      row.push(olsPredict(t.logTvl, resampledCoefficients) - t.logMultiple);
+    }
+    bootstrapErrors.push(row);
   }
 
-  let in50 = 0, in80 = 0;
-  for (let i = 0; i < test.length; i++) {
-    const errs = resErrors.map((b) => b[i]!).sort((a, b) => a - b);
-    const p10 = percentile(errs, 0.1);
-    const p90 = percentile(errs, 0.9);
-    const p25 = percentile(errs, 0.25);
-    const p75 = percentile(errs, 0.75);
-    if (0 >= p25 && 0 <= p75) in50++;
-    if (0 >= p10 && 0 <= p90) in80++;
+  let within50 = 0;
+  let within80 = 0;
+  for (let i = 0; i < testing.length; i++) {
+    const column = bootstrapErrors.map((round) => round[i]!).sort((a, b) => a - b);
+    const lo80 = percentile(column, 0.1);
+    const hi80 = percentile(column, 0.9);
+    const lo50 = percentile(column, 0.25);
+    const hi50 = percentile(column, 0.75);
+    if (0 >= lo50 && 0 <= hi50) within50++;
+    if (0 >= lo80 && 0 <= hi80) within80++;
   }
   return {
     miss,
-    pctIn50: test.length > 0 ? (in50 / test.length) * 100 : 0,
-    pctIn80: test.length > 0 ? (in80 / test.length) * 100 : 0,
+    pctIn50: testing.length > 0 ? (within50 / testing.length) * 100 : 0,
+    pctIn80: testing.length > 0 ? (within80 / testing.length) * 100 : 0,
   };
 }
 
