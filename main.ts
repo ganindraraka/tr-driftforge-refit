@@ -31,6 +31,7 @@ import { renderReadout } from './lib/readout.ts';
 import { diffSnapshots, diffLine } from './lib/snapshot-diff.ts';
 import { byCategory, bucketLine } from './lib/buckets.ts';
 import { signedPct } from './lib/format.ts';
+import { summarizeBoard } from './lib/report-summary.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
 
 // This module's own directory: the root of the shipped repository.
@@ -147,6 +148,7 @@ function main(): void {
   // A plain-text table for a terminal. Written to stderr so the stdout summary
   // stays a single line; a caller that wants the table reads it here.
   process.stderr.write(renderReadout(board, { limit: 10 }) + '\n');
+  process.stderr.write(summarizeBoard(board).text + '\n');
 
   // Publish the board and the page dataset, then the page and its screenshots,
   // then the dossier that seals them. The dossier is built last so it reads every
