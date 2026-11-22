@@ -1260,6 +1260,7 @@ export function buildReport(snapshot: Snapshot): ModelReport {
   const peers = buildFitPeers(snapshot.protocols, snapshot.as_of);
   const sizeCoeffs = fitSizeCurve(peers);
   const oddsCoeffs = fitOddsModel(snapshot.protocols, snapshot.as_of);
+  const boot = bootstrap(peers, snapshot.protocols, snapshot.as_of, 200);
 
   // Size model: leave-one-out and walk-forward validation.
   const loo = looSizeValidate(peers);
@@ -1305,12 +1306,15 @@ export function buildReport(snapshot: Snapshot): ModelReport {
   // The flat baseline is always shown, but it is superseded by the size curve.
   termTable.push({ term: 'flat_median_multiple', coefficient: flatMultiple, kept: false });
 
-  // size_curve: log(TVL) slope
-  termTable.push({ term: 'size_curve', coefficient: sizeCoeffs[1], kept: true });
+  // size_curve: log(TVL) slope. Kept only if it lowers the held-out miss in
+  // BOTH the leave-one-out and the walk-forward test versus the flat baseline.
+  const sizeKept = loo.miss < flatLoOMiss && wf.miss < flatWfMiss;
+  termTable.push({ term: 'size_curve', coefficient: sizeCoeffs[1], kept: sizeKept });
 
-  // Evaluate logistic terms for the odds model
-  // age_years_listed: age coefficient in logistic model
-  termTable.push({ term: 'age_years_listed', coefficient: oddsCoeffs[2]!, kept: true });
+  // age_years_listed: age coefficient in the logistic model. Kept only if the
+  // odds model with age scores a lower Brier than the flat launch rate.
+  const ageKept = oddsScore < flatBrier;
+  termTable.push({ term: 'age_years_listed', coefficient: oddsCoeffs[2]!, kept: ageKept });
 
   // growth_7d: test whether 7d growth adds to the multiple model
   const peersWithGrowth = peers.filter((p) => p.growth7d != null);
@@ -1360,14 +1364,19 @@ export function buildReport(snapshot: Snapshot): ModelReport {
     if (!t.kept) testedNotUsed.push(t.term);
   }
 
-  // Bootstrap: median absolute deviation across all protocols
-  // Use the average width of the P25-P75 range as a proxy for bootstrap SE
-  const allBootWidths = peers.map((peer) => {
-    const vals: number[] = [];
-    // We already computed this above. Use a simple approximation.
-    return Math.abs(Math.exp(peer.logMultiple) - Math.exp(olsPredict(peer.logTvl, sizeCoeffs)));
-  });
-  const bootstrapSE = allBootWidths.reduce((a, b) => a + b, 0) / allBootWidths.length;
+  // Bootstrap: median SE of the fitted size-curve slope across the refits.
+  // For each refit, measure how far its predicted log-multiple deviates from
+  // the point estimate over the same peer set, then take the median deviation.
+  const seValues: number[] = boot.sizeCoeffs.map((coeffs) => {
+    let sse = 0;
+    for (const peer of peers) {
+      const est = olsPredict(peer.logTvl, coeffs);
+      const base = olsPredict(peer.logTvl, sizeCoeffs);
+      sse += (est - base) ** 2;
+    }
+    return Math.sqrt(sse / Math.max(1, peers.length));
+  }).sort((a, b) => a - b);
+  const bootstrapSE = percentile(seValues, 0.5);
 
   return {
     size_loo_miss: loo.miss,

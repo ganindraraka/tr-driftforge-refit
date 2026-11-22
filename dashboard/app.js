@@ -84,8 +84,10 @@
   }
 
   function buildStats() {
+    const rankedSlugs = new Set((data.rows || []).map((r) => r.slug));
+    const covered = (data.watchlist || []).filter((s) => rankedSlugs.has(s)).length;
     const figures = [
-      [data.watchlist_size + '/' + data.watchlist_size, 'Watchlist covered'],
+      [covered + '/' + data.watchlist_size, 'Watchlist covered'],
       [data.board_size, 'Protocols ranked'],
       [data.early_size, 'Below the floor'],
       [data.live_size, 'Token references'],
