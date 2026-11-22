@@ -249,110 +249,142 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
 }
 
 // ---------------------------------------------------------------- statistics
+//
+// The estimators below are hand-written so the entry keeps zero runtime
+// dependencies. Every routine is small and closed-form where it can be, and
+// iterative only where it must be (the logistic fit and the bootstrap).
 
-/** Simple OLS: y ~ x. Returns [intercept, slope]. */
+/**
+ * Ordinary least squares for a single predictor: fits y = a + b·x and returns
+ * the pair [a, b]. Closed form from the sums of x, y, x², xy.
+ */
 function ols(xs: number[], ys: number[]): [number, number] {
-  const n = xs.length;
-  let sx = 0, sy = 0, sxx = 0, sxy = 0;
-  for (let i = 0; i < n; i++) {
-    sx += xs[i]!;
-    sy += ys[i]!;
-    sxx += xs[i]! * xs[i]!;
-    sxy += xs[i]! * ys[i]!;
+  const count = xs.length;
+  let sumX = 0;
+  let sumY = 0;
+  let sumXX = 0;
+  let sumXY = 0;
+  for (let i = 0; i < count; i++) {
+    const x = xs[i]!;
+    const y = ys[i]!;
+    sumX += x;
+    sumY += y;
+    sumXX += x * x;
+    sumXY += x * y;
   }
-  const slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);
-  const intercept = (sy - slope * sx) / n;
+  const denom = count * sumXX - sumX * sumX;
+  const slope = (count * sumXY - sumX * sumY) / denom;
+  const intercept = (sumY - slope * sumX) / count;
   return [intercept, slope];
 }
 
-/** Predict y from OLS coefficients. */
+/** Evaluate a fitted line a + b·x at one point. */
 function olsPredict(x: number, coeffs: [number, number]): number {
-  return coeffs[0] + coeffs[1] * x;
+  const [intercept, slope] = coeffs;
+  return intercept + slope * x;
 }
 
-/** R-squared of an OLS fit. */
+/**
+ * Coefficient of determination for a fitted line. Returns 0 when the target has
+ * no spread at all (a constant column carries no information to explain).
+ */
 function olsRSquared(xs: number[], ys: number[], coeffs: [number, number]): number {
-  const ym = ys.reduce((a, b) => a + b, 0) / ys.length;
-  let ssRes = 0, ssTot = 0;
+  let mean = 0;
+  for (const y of ys) mean += y;
+  mean /= ys.length;
+  let residual = 0;
+  let total = 0;
   for (let i = 0; i < xs.length; i++) {
-    const pred = olsPredict(xs[i]!, coeffs);
-    ssRes += (ys[i]! - pred) ** 2;
-    ssTot += (ys[i]! - ym) ** 2;
+    const predicted = olsPredict(xs[i]!, coeffs);
+    residual += (ys[i]! - predicted) ** 2;
+    total += (ys[i]! - mean) ** 2;
   }
-  return ssTot === 0 ? 0 : 1 - ssRes / ssTot;
+  return total === 0 ? 0 : 1 - residual / total;
 }
 
-/** Sigmoid (logistic) function. */
-function sigmoid(x: number): number {
-  return 1 / (1 + Math.exp(-x));
+/** The logistic (inverse logit) link. */
+function sigmoid(z: number): number {
+  return 1 / (1 + Math.exp(-z));
 }
 
-/** Logistic regression via Newton-Raphson. Features: [1, x1, x2]. Returns [b0, b1, b2]. */
-function logisticFit(X: number[][], y: number[], maxIter = 20, tol = 1e-6): number[] {
-  const n = X.length;
-  const k = X[0]!.length;
-  let w = new Array<number>(k).fill(0);
+/**
+ * Fit a logistic regression by Newton–Raphson. Each row of X begins with the
+ * constant 1, so the returned weight vector is [b0, b1, …]. Converges on the
+ * gradient norm; stops early if the Hessian turns singular.
+ */
+function logisticFit(rows: number[][], labels: number[], maxIter = 20, tol = 1e-6): number[] {
+  const n = rows.length;
+  const k = rows[0]!.length;
+  const weights = new Array<number>(k).fill(0);
 
-  for (let iter = 0; iter < maxIter; iter++) {
-    const p = new Array<number>(n);
+  for (let step = 0; step < maxIter; step++) {
+    // Fitted probabilities for the current weights.
+    const fitted = new Array<number>(n);
     for (let i = 0; i < n; i++) {
-      let z = 0;
-      for (let j = 0; j < k; j++) z += w[j]! * X[i]![j]!;
-      p[i] = sigmoid(z);
+      let score = 0;
+      for (let j = 0; j < k; j++) score += weights[j]! * rows[i]![j]!;
+      fitted[i] = sigmoid(score);
     }
 
-    const grad = new Array<number>(k).fill(0);
-    const H = new Array<number[]>(k);
-    for (let j = 0; j < k; j++) H[j] = new Array<number>(k).fill(0);
+    // Gradient of the log-likelihood and its (negative) Hessian.
+    const gradient = new Array<number>(k).fill(0);
+    const hessian = new Array<number[]>(k);
+    for (let j = 0; j < k; j++) hessian[j] = new Array<number>(k).fill(0);
 
     for (let i = 0; i < n; i++) {
-      const err = p[i]! - y[i]!;
-      const wt = p[i]! * (1 - p[i]!);
+      const residual = fitted[i]! - labels[i]!;
+      const curvature = fitted[i]! * (1 - fitted[i]!);
       for (let a = 0; a < k; a++) {
-        grad[a]! += X[i]![a]! * err;
+        gradient[a]! += rows[i]![a]! * residual;
         for (let b = 0; b < k; b++) {
-          H[a]![b]! += X[i]![a]! * X[i]![b]! * wt;
+          hessian[a]![b]! += rows[i]![a]! * rows[i]![b]! * curvature;
         }
       }
     }
 
-    // Solve H * delta = -grad via Gaussian elimination (k is small, ≤ 3)
-    const delta = solveLinear(H, grad.map((g) => -g));
+    // Newton step: solve H·delta = -gradient (k is tiny, at most 3).
+    const negGradient = gradient.map((value) => -value);
+    const delta = solveLinear(hessian, negGradient);
     if (delta === null) break;
 
-    let maxDelta = 0;
+    let largest = 0;
     for (let j = 0; j < k; j++) {
-      w[j]! += delta[j]!;
-      maxDelta = Math.max(maxDelta, Math.abs(delta[j]!));
+      weights[j]! += delta[j]!;
+      largest = Math.max(largest, Math.abs(delta[j]!));
     }
-    if (maxDelta < tol) break;
+    if (largest < tol) break;
   }
-  return w;
+  return weights;
 }
 
-/** Solve A*x = b via Gaussian elimination with partial pivoting. Returns null if singular. */
+/**
+ * Solve the dense system A·x = b by Gaussian elimination with partial pivoting.
+ * Returns null when a pivot collapses to zero (a singular system).
+ */
 function solveLinear(A: number[][], b: number[]): number[] | null {
   const n = A.length;
-  const M = A.map((row, i) => [...row, b[i]!]);
-  for (let col = 0; col < n; col++) {
-    let maxRow = col;
-    for (let row = col + 1; row < n; row++) {
-      if (Math.abs(M[row]![col]!) > Math.abs(M[maxRow]![col]!)) maxRow = row;
+  // Work on an augmented copy so the caller's matrices stay untouched.
+  const aug = A.map((row, i) => [...row, b[i]!]);
+  for (let pivot = 0; pivot < n; pivot++) {
+    let best = pivot;
+    for (let row = pivot + 1; row < n; row++) {
+      if (Math.abs(aug[row]![pivot]!) > Math.abs(aug[best]![pivot]!)) best = row;
     }
-    if (Math.abs(M[maxRow]![col]!) < 1e-12) return null;
-    [M[col], M[maxRow]] = [M[maxRow]!, M[col]!];
-    for (let row = col + 1; row < n; row++) {
-      const f = M[row]![col]! / M[col]![col]!;
-      for (let j = col; j <= n; j++) M[row]![j]! -= f * M[col]![j]!;
+    if (Math.abs(aug[best]![pivot]!) < 1e-12) return null;
+    [aug[pivot], aug[best]] = [aug[best]!, aug[pivot]!];
+    for (let row = pivot + 1; row < n; row++) {
+      const factor = aug[row]![pivot]! / aug[pivot]![pivot]!;
+      for (let col = pivot; col <= n; col++) aug[row]![col]! -= factor * aug[pivot]![col]!;
     }
   }
-  const x = new Array<number>(n);
+  // Back-substitute into the solution vector.
+  const solution = new Array<number>(n);
   for (let i = n - 1; i >= 0; i--) {
-    let s = M[i]![n]!;
-    for (let j = i + 1; j < n; j++) s -= M[i]![j]! * x[j]!;
-    x[i] = s / M[i]![i]!;
+    let acc = aug[i]![n]!;
+    for (let j = i + 1; j < n; j++) acc -= aug[i]![j]! * solution[j]!;
+    solution[i] = acc / aug[i]![i]!;
   }
-  return x;
+  return solution;
 }
 
 // ---------------------------------------------------------------- traded-peers identification

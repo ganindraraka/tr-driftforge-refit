@@ -1,22 +1,23 @@
-// token-radar-01 · entry point
+// token-radar-01 · entry point (revision 2)
 //
-// One sealed snapshot goes in; a complete offline radar comes out. This file is
-// deliberately thin: it resolves where to read and write, hands the snapshot to
-// the model in lib/model.ts, refuses a board the gate would reject, publishes the
-// page and its data, and seals everything into a dossier with the vendor library.
-// All valuation logic lives in the model, never here, so the CLI and the page can
-// never disagree about a rank.
+// The whole radar is built offline from a single sealed snapshot. This module is
+// the thin shell around lib/model.ts: it works out where to read the snapshot and
+// where to drop the artifacts, asks the model for the ranked board, rejects a
+// board the gate would refuse, publishes the page and its data beside the board,
+// and finally seals the hand-in into a dossier with the vendor library. No
+// valuation lives here — every rank comes from lib/model.ts — so the command-line
+// run and the page can never disagree about a position.
 //
-// Paths the caller passes are resolved against the working directory. The assets
-// we ship (dashboard/, screenshots/) are resolved against this module, so the run
-// behaves the same no matter where it is invoked from.
+// Paths named by the caller are resolved against the process working directory.
+// Bundled assets (dashboard/, screenshots/) are resolved against this file, so a
+// run lands the same no matter the caller's cwd.
 
 import {
   copyFileSync,
   existsSync,
   mkdirSync,
-  readFileSync,
   readdirSync,
+  readFileSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
@@ -25,11 +26,11 @@ import { fileURLToPath } from 'node:url';
 import { boardIssue, buildRadar, dataScript, parseSnapshot } from './lib/model.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
 
-// The directory this module sits in: the root of the shipped repository.
+// This module's own directory: the root of the shipped repository.
 const shipRoot = fileURLToPath(new URL('.', import.meta.url));
 
-// The caps we hand buildDossier. They only ever refuse; the text cap is what
-// shapes the bytes, and it matches the scorer's own 65536 so our dossier equals
+// Caps handed to buildDossier. They can only refuse; the byte cap on the dossier
+// text is what shapes it, matched to the scorer's own 65536 so the dossier equals
 // the one the gate rebuilds from the same dashboard/ and screenshots/.
 const dossierCaps = {
   text_max_bytes: 65_536,
@@ -37,16 +38,16 @@ const dossierCaps = {
   dashboard: { max_files: 400, max_bytes: 4_194_304 },
 };
 
-// Print a refusal to stderr and leave with a non-zero status. Exit 2 is reserved
-// for a missing input so a caller can tell "nothing to read" from "bad board".
+// Report a refusal on stderr and exit non-zero. Exit 2 is kept for a missing
+// input so a caller can separate "nothing to read" from "bad board".
 function refuse(message: string, exitCode = 1): never {
   process.stderr.write(`token radar: ${message}\n`);
   process.exit(exitCode);
 }
 
-// Read one option from argv, supporting both `--name value` and `--name=value`.
-// Precedence matches the original contract: the first standalone occurrence wins
-// over any equals form, and the first equals form wins over the fallback.
+// Read one option, accepting `--name value` and `--name=value`. A standalone
+// occurrence is preferred over an equals form, and an equals form over the
+// fallback — the same precedence the original contract used.
 function readOption(argv: string[], name: string, fallback: string): string {
   const flag = `--${name}`;
   const at = argv.indexOf(flag);
@@ -57,9 +58,9 @@ function readOption(argv: string[], name: string, fallback: string): string {
   return fallback;
 }
 
-// Resolve the snapshot file and the output directory from flags and environment.
-// An --input that already names a .json file is used as-is; anything else is
-// treated as a directory holding snapshot.json (the sealed /input mount).
+// Resolve the snapshot file and output directory. An --input already naming a
+// .json file is taken as-is; anything else is a directory holding snapshot.json
+// (the sealed /input mount).
 function resolvePaths(argv: string[]): { snapshotFile: string; outputDir: string } {
   const inputArg = readOption(argv, 'input', '/input');
   const snapshotFile = inputArg.endsWith('.json') ? inputArg : join(inputArg, 'snapshot.json');
@@ -67,10 +68,10 @@ function resolvePaths(argv: string[]): { snapshotFile: string; outputDir: string
   return { snapshotFile, outputDir };
 }
 
-// Copy one shipped asset folder into the output, keeping every source name so
-// relative links and the screenshot ordering survive. Only visible regular files
-// are published; dotfiles and subdirectories are left behind. Returns the names
-// actually copied, in directory order.
+// Copy one bundled asset folder into the output, keeping every source name so
+// relative links and screenshot order survive. Only visible regular files are
+// published; dotfiles and subdirectories are skipped. Returns the copied names in
+// directory order.
 function publishFolder(folder: string, outputDir: string): string[] {
   const from = join(shipRoot, folder);
   if (!existsSync(from)) return [];
@@ -87,8 +88,9 @@ function publishFolder(folder: string, outputDir: string): string[] {
   return copied;
 }
 
-// The hand-in needs three screenshots (board, detail, filtered) and each name
-// must be a plain dossier image name. Refuse early with a clear message.
+// The hand-in needs three dossier images — the board, a detail view and a filtered
+// view — and each name must be a plain dossier image name. Refuse early and
+// clearly when that does not hold.
 function checkScreenshots(names: string[]): void {
   if (names.length < 3) {
     const word = names.length === 1 ? 'image' : 'images';
@@ -110,16 +112,16 @@ function main(): void {
     refuse(`no snapshot at ${snapshotFile}: pass --input <snapshot.json|directory> or mount the sealed /input`, 2);
   }
 
-  // Score the whole universe once. The page reads these same numbers from data.js
-  // and never recomputes a rank of its own.
+  // Score the universe once here. The page reads these same numbers back from
+  // data.js and never recomputes a rank of its own.
   const snapshot = parseSnapshot(readFileSync(snapshotFile, 'utf8'));
   const { board, radar } = buildRadar(snapshot);
   const gateRefusal = boardIssue(board, snapshot);
   if (gateRefusal !== null) refuse(`the model wrote a board the gate refuses: ${gateRefusal}`);
 
-  // Publish the machine-readable board and the page's dataset, then the page and
-  // its screenshots, then the dossier that seals them. The dossier is built last
-  // so it reads every input at its final path.
+  // Publish the board and the page dataset, then the page and its screenshots,
+  // then the dossier that seals them. The dossier is built last so it reads every
+  // input at its final path.
   mkdirSync(outputDir, { recursive: true });
   const out = (name: string): string => join(outputDir, name);
   writeFileSync(out('board.json'), JSON.stringify({ rows: board }) + '\n');
