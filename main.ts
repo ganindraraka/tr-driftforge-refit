@@ -27,6 +27,8 @@ import { boardIssue, buildRadar, dataScript, parseSnapshot } from './lib/model.t
 import { auditBoard } from './lib/audit.ts';
 import { auditInput, hygieneLine } from './lib/health.ts';
 import { narrateBoard, confidenceCounts } from './lib/narrative.ts';
+import { renderReadout } from './lib/readout.ts';
+import { diffSnapshots, diffLine } from './lib/snapshot-diff.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
 
 // This module's own directory: the root of the shipped repository.
@@ -115,6 +117,16 @@ function main(): void {
     refuse(`no snapshot at ${snapshotFile}: pass --input <snapshot.json|directory> or mount the sealed /input`, 2);
   }
 
+  // Optional previous snapshot: when given, the run also reports what moved
+  // between the two. Absent by default, so an ordinary run is unchanged.
+  const prevArg = readOption(argv, 'prev', '');
+  let diffText: string | null = null;
+  if (prevArg !== '' && existsSync(prevArg)) {
+    const before = parseSnapshot(readFileSync(prevArg, 'utf8'));
+    const after = parseSnapshot(readFileSync(snapshotFile, 'utf8'));
+    diffText = diffLine(diffSnapshots(before, after));
+  }
+
   // Score the universe once here. The page reads these same numbers back from
   // data.js and never recomputes a rank of its own.
   const snapshot = parseSnapshot(readFileSync(snapshotFile, 'utf8'));
@@ -127,6 +139,9 @@ function main(): void {
   const audit = auditBoard(board, snapshot);
   const hygiene = auditInput(snapshot);
   const confidence = confidenceCounts(narrateBoard(board));
+  // A plain-text table for a terminal. Written to stderr so the stdout summary
+  // stays a single line; a caller that wants the table reads it here.
+  process.stderr.write(renderReadout(board, { limit: 10 }) + '\n');
 
   // Publish the board and the page dataset, then the page and its screenshots,
   // then the dossier that seals them. The dossier is built last so it reads every
@@ -146,6 +161,7 @@ function main(): void {
     `${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside); ` +
     `audit: ${audit.summary}; ${hygieneLine(hygiene)}; ` +
     `bands ${confidence.tight} tight / ${confidence.moderate} moderate / ${confidence.wide} wide; ` +
+    (diffText !== null ? `diff ${diffText}; ` : '') +
     `wrote ${out('board.json')}, ${out('data.js')}, ${out('dashboard')} (${pageFiles.length} files), ` +
     `${out('screenshots')} (${shots.length} images) and ${out('dossier.json')}`;
   process.stdout.write(summary + '\n');
