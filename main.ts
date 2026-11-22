@@ -29,6 +29,8 @@ import { auditInput, hygieneLine } from './lib/health.ts';
 import { narrateBoard, confidenceCounts } from './lib/narrative.ts';
 import { renderReadout } from './lib/readout.ts';
 import { diffSnapshots, diffLine } from './lib/snapshot-diff.ts';
+import { byCategory, bucketLine } from './lib/buckets.ts';
+import { signedPct } from './lib/format.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
 
 // This module's own directory: the root of the shipped repository.
@@ -139,6 +141,9 @@ function main(): void {
   const audit = auditBoard(board, snapshot);
   const hygiene = auditInput(snapshot);
   const confidence = confidenceCounts(narrateBoard(board));
+  const categories = bucketLine(byCategory(board));
+  // A one-glance tell of how the top row itself has moved this week.
+  const topMove = signedPct(board[0]?.change_7d ?? null);
   // A plain-text table for a terminal. Written to stderr so the stdout summary
   // stays a single line; a caller that wants the table reads it here.
   process.stderr.write(renderReadout(board, { limit: 10 }) + '\n');
@@ -161,6 +166,7 @@ function main(): void {
     `${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside); ` +
     `audit: ${audit.summary}; ${hygieneLine(hygiene)}; ` +
     `bands ${confidence.tight} tight / ${confidence.moderate} moderate / ${confidence.wide} wide; ` +
+    `top categories ${categories}; leader ${topMove} week; ` +
     (diffText !== null ? `diff ${diffText}; ` : '') +
     `wrote ${out('board.json')}, ${out('data.js')}, ${out('dashboard')} (${pageFiles.length} files), ` +
     `${out('screenshots')} (${shots.length} images) and ${out('dossier.json')}`;
