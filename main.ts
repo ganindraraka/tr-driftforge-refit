@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 import { boardIssue, buildRadar, dataScript, parseSnapshot } from './lib/model.ts';
 import { auditBoard } from './lib/audit.ts';
 import { auditInput, hygieneLine } from './lib/health.ts';
+import { narrateBoard, confidenceCounts } from './lib/narrative.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
 
 // This module's own directory: the root of the shipped repository.
@@ -125,6 +126,7 @@ function main(): void {
   // score; it only says how the ranking holds together in the log line.
   const audit = auditBoard(board, snapshot);
   const hygiene = auditInput(snapshot);
+  const confidence = confidenceCounts(narrateBoard(board));
 
   // Publish the board and the page dataset, then the page and its screenshots,
   // then the dossier that seals them. The dossier is built last so it reads every
@@ -143,6 +145,7 @@ function main(): void {
     `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ` +
     `${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside); ` +
     `audit: ${audit.summary}; ${hygieneLine(hygiene)}; ` +
+    `bands ${confidence.tight} tight / ${confidence.moderate} moderate / ${confidence.wide} wide; ` +
     `wrote ${out('board.json')}, ${out('data.js')}, ${out('dashboard')} (${pageFiles.length} files), ` +
     `${out('screenshots')} (${shots.length} images) and ${out('dossier.json')}`;
   process.stdout.write(summary + '\n');
