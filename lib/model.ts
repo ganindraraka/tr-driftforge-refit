@@ -1180,68 +1180,69 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     .slice(0, EARLY_ROWS);
   for (const p of early) chosen.set(p.slug, p);
 
-  // Pre-compute bootstrap ranges for each chosen protocol
+  // Pre-compute a bootstrap range for every chosen protocol, so each row can
+  // show a spread instead of a single point estimate.
   const bootRanges = new Map<string, { p25: number; p75: number; p10: number; p90: number }>();
   for (const p of chosen.values()) {
-    const vals: number[] = [];
-    for (let r = 0; r < boot.sizeCoeffs.length; r++) {
-      const sc = boot.sizeCoeffs[r]!;
-      const oc = boot.oddsCoeffs[r]!;
+    const samples: number[] = [];
+    for (let round = 0; round < boot.sizeCoeffs.length; round++) {
+      const sizeSample = boot.sizeCoeffs[round]!;
+      const oddsSample = boot.oddsCoeffs[round]!;
       const age = ageDays(snapshot.as_of, p.listed_at);
-      const g = growthMultiplier(p.change_7d, model);
-      const m = maturityMultiplier(age, model);
-      const sm = sizeMultiple(p.tvl_usd, sc);
-      const lo = launchProb(Math.log(p.tvl_usd), age !== null ? age / 365 : 2, oc);
-      vals.push(Math.max(1, Math.round(p.tvl_usd * sm * lo * g * m)));
+      const growth = growthMultiplier(p.change_7d, model);
+      const maturity = maturityMultiplier(age, model);
+      const multiple = sizeMultiple(p.tvl_usd, sizeSample);
+      const lo = launchProb(Math.log(p.tvl_usd), age !== null ? age / 365 : 2, oddsSample);
+      samples.push(Math.max(1, Math.round(p.tvl_usd * multiple * lo * growth * maturity)));
     }
-    const sorted = [...vals].sort((a, b) => a - b);
+    const ordered = [...samples].sort((a, b) => a - b);
     bootRanges.set(p.slug, {
-      p25: percentile(sorted, 0.25),
-      p75: percentile(sorted, 0.75),
-      p10: percentile(sorted, 0.10),
-      p90: percentile(sorted, 0.90),
+      p25: percentile(ordered, 0.25),
+      p75: percentile(ordered, 0.75),
+      p10: percentile(ordered, 0.10),
+      p90: percentile(ordered, 0.90),
     });
   }
 
   const scored = [...chosen.values()].map((p) => {
     const ranges = bootRanges.get(p.slug) ?? null;
-    const v = computeImplied(p, snapshot.as_of, model, sizeCoeffs, oddsCoeffs, ranges);
-    const reasons = scoreReasons(p, v.age, v.growthPct, v.growthMult, v.maturityMult, v.sizeMult, v.launchOdds);
-    return { p, ...v, reasons };
+    const value = computeImplied(p, snapshot.as_of, model, sizeCoeffs, oddsCoeffs, ranges);
+    const reasons = scoreReasons(p, value.age, value.growthPct, value.growthMult, value.maturityMult, value.sizeMult, value.launchOdds);
+    return { p, ...value, reasons };
   });
   scored.sort((a, b) => b.implied - a.implied || slugOrder(a.p.slug, b.p.slug));
 
-  return scored.map((s, i) => ({
-    rank: i + 1,
-    slug: s.p.slug,
-    name: s.p.name,
-    category: s.p.category,
-    chains: s.p.chains,
-    tvl_usd: s.p.tvl_usd,
-    change_7d: s.p.change_7d,
-    mcap_usd: s.p.mcap_usd,
-    listed_at: s.p.listed_at,
-    gecko_id: s.p.gecko_id,
-    symbol: s.p.symbol,
+  return scored.map((entry, index) => ({
+    rank: index + 1,
+    slug: entry.p.slug,
+    name: entry.p.name,
+    category: entry.p.category,
+    chains: entry.p.chains,
+    tvl_usd: entry.p.tvl_usd,
+    change_7d: entry.p.change_7d,
+    mcap_usd: entry.p.mcap_usd,
+    listed_at: entry.p.listed_at,
+    gecko_id: entry.p.gecko_id,
+    symbol: entry.p.symbol,
     token_status: 'pre-token' as const,
-    age_days: s.age,
-    implied_value_usd: s.implied,
-    p25_usd: s.p25,
-    p75_usd: s.p75,
-    p10_usd: s.p10,
-    p90_usd: s.p90,
-    launch_odds: round4(s.launchOdds),
-    hazard_90d: round4(s.hazard90),
-    farm_steps: farmSteps(s.p, s.age),
-    reasons: s.reasons,
+    age_days: entry.age,
+    implied_value_usd: entry.implied,
+    p25_usd: entry.p25,
+    p75_usd: entry.p75,
+    p10_usd: entry.p10,
+    p90_usd: entry.p90,
+    launch_odds: round4(entry.launchOdds),
+    hazard_90d: round4(entry.hazard90),
+    farm_steps: farmSteps(entry.p, entry.age),
+    reasons: entry.reasons,
     model: {
       base_multiple: model.base_multiple,
-      growth_pct: s.growthPct,
-      growth_multiplier: round4(s.growthMult),
-      maturity_multiplier: round4(s.maturityMult),
-      age_days: s.age,
-      size_curve_multiple: round4(s.sizeMult),
-      launch_odds: round4(s.launchOdds),
+      growth_pct: entry.growthPct,
+      growth_multiplier: round4(entry.growthMult),
+      maturity_multiplier: round4(entry.maturityMult),
+      age_days: entry.age,
+      size_curve_multiple: round4(entry.sizeMult),
+      launch_odds: round4(entry.launchOdds),
     },
   }));
 }
@@ -1254,43 +1255,49 @@ export function buildReport(snapshot: Snapshot): ModelReport {
   const sizeCoeffs = fitSizeCurve(peers);
   const oddsCoeffs = fitOddsModel(snapshot.protocols, snapshot.as_of);
 
-  // Size model: LOO and WF validation
+  // Size model: leave-one-out and walk-forward validation.
   const loo = looSizeValidate(peers);
   const wf = wfSizeValidate(peers);
 
-  // Flat baseline: using median multiple for all
+  // Flat baseline: one median multiple for every peer.
   const multiples = peers.map((p) => Math.exp(p.logMultiple));
-  const sortedMult = [...multiples].sort((a, b) => a - b);
-  const flatMult = sortedMult.length > 0 ? sortedMult[Math.floor(sortedMult.length / 2)]! : 1;
-  const flatMiss = peers.reduce((a, p) => a + Math.abs(Math.log(flatMult) - p.logMultiple), 0) / peers.length;
+  const sortedMultiples = [...multiples].sort((a, b) => a - b);
+  const flatMultiple = sortedMultiples.length > 0
+    ? sortedMultiples[Math.floor(sortedMultiples.length / 2)]!
+    : 1;
+  const flatMiss = peers.reduce(
+    (acc, p) => acc + Math.abs(Math.log(flatMultiple) - p.logMultiple),
+    0,
+  ) / peers.length;
 
-  // Odds: Brier score
-  const oBrier = oddsBrier(snapshot.protocols, snapshot.as_of, oddsCoeffs);
-  const allProts = snapshot.protocols.filter((p) => p.tvl_usd > 0);
-  const tokenCount = allProts.filter((p) =>
+  // Odds: Brier score against a constant-rate baseline.
+  const oddsScore = oddsBrier(snapshot.protocols, snapshot.as_of, oddsCoeffs);
+  const allProtocols = snapshot.protocols.filter((p) => p.tvl_usd > 0);
+  const withToken = allProtocols.filter((p) =>
     (p.mcap_usd != null && p.mcap_usd > 0) || p.gecko_id != null || p.symbol != null).length;
-  const flatRate = allProts.length > 0 ? tokenCount / allProts.length : 0;
-  const flatBrier = allProts.reduce((a, p) => {
-    const actual = (p.mcap_usd != null && p.mcap_usd > 0) || p.gecko_id != null || p.symbol != null ? 1 : 0;
-    return a + (flatRate - actual) ** 2;
-  }, 0) / allProts.length;
+  const flatRate = allProtocols.length > 0 ? withToken / allProtocols.length : 0;
+  const flatBrier = allProtocols.reduce((acc, p) => {
+    const observed = (p.mcap_usd != null && p.mcap_usd > 0) || p.gecko_id != null || p.symbol != null ? 1 : 0;
+    return acc + (flatRate - observed) ** 2;
+  }, 0) / allProtocols.length;
 
-  // Per-term fit table: evaluate each term by its contribution
-  // "a term is kept only if it lowers the held-out miss in both tests."
+  // Per-term fit table: a term is kept only if it lowers the held-out miss in
+  // both tests.
   const termTable: TermFitRow[] = [];
 
-  // flat_median_multiple: constant multiple baseline
+  // flat_median_multiple: the constant-multiple baseline.
   const flatLoOMiss = flatMiss;
   const flatWfMiss = (() => {
-    const sorted = [...peers].sort((a, b) => a.logTvl - b.logTvl);
-    const split = Math.floor(sorted.length * 0.8);
-    const test = sorted.slice(split);
+    const ordered = [...peers].sort((a, b) => a.logTvl - b.logTvl);
+    const split = Math.floor(ordered.length * 0.8);
+    const test = ordered.slice(split);
     if (test.length === 0) return Infinity;
-    const trainMult = sorted.slice(0, split).reduce((a, p) => a + Math.exp(p.logMultiple), 0) / split;
-    return test.reduce((a, p) => a + Math.abs(Math.log(trainMult) - p.logMultiple), 0) / test.length;
+    const trainMultiple = ordered.slice(0, split)
+      .reduce((acc, p) => acc + Math.exp(p.logMultiple), 0) / split;
+    return test.reduce((acc, p) => acc + Math.abs(Math.log(trainMultiple) - p.logMultiple), 0) / test.length;
   })();
-  // flat is always the baseline; show it but it's superseded
-  termTable.push({ term: 'flat_median_multiple', coefficient: flatMult, kept: false });
+  // The flat baseline is always shown, but it is superseded by the size curve.
+  termTable.push({ term: 'flat_median_multiple', coefficient: flatMultiple, kept: false });
 
   // size_curve: log(TVL) slope
   termTable.push({ term: 'size_curve', coefficient: sizeCoeffs[1], kept: true });
@@ -1360,7 +1367,7 @@ export function buildReport(snapshot: Snapshot): ModelReport {
     size_loo_miss: loo.miss,
     size_wf_miss: wf.miss,
     size_flat_miss: flatMiss,
-    odds_brier: oBrier,
+    odds_brier: oddsScore,
     odds_flat_rate: flatRate,
     odds_flat_brier: flatBrier,
     loo_pct_in_50: loo.pctIn50,
