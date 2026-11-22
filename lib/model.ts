@@ -811,21 +811,22 @@ function holdDaysFor(age: number | null): number {
 }
 
 /**
- * Farm plan builder. Each step is a single string containing:
+ * Farm plan builder. Each step is one string shaped as:
  * action | Cost: $X. | Time: N min. | Exit: rule. | Cadence: freq. | vs 4% T-bill: ~P% annualized.
  */
 export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
   const chain = chainOf(p);
   const capital = capitalFor(p);
   const hold = holdDaysFor(age);
-  const c = (p.category ?? '').toLowerCase();
+  const category = (p.category ?? '').toLowerCase();
   const gas = chain === 'Ethereum' ? '$5–25' : '$0.10–3';
   const fee = `estimated ${gas} gas per onchain action`;
 
-  // Expected annualized return estimate, conservative
+  // Conservative annualized-return estimate and the 4% T-bill benchmark.
   const estYield = (capital * 0.05).toFixed(0); // ~5% expected
   const bench4pc = (capital * 0.04).toFixed(0); // 4% T-bill
 
+  // Assemble one step and keep it inside the gate's 20..600 character window.
   function makeStep(
     actionText: string,
     cost: string,
@@ -834,10 +835,10 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
     cadence: string,
     benchmark: string,
   ): string {
-    let s = `${actionText} | Cost: ${cost}. | Time: ${time}. | Exit: ${exit}. | Cadence: ${cadence}. | vs 4% T-bill: ${benchmark}.`;
-    if (s.length > 600) s = `${s.slice(0, 596)}...`;
-    if (s.length < 20) s = `${s} Hold the position and check the protocol's own page.`;
-    return s;
+    let line = `${actionText} | Cost: ${cost}. | Time: ${time}. | Exit: ${exit}. | Cadence: ${cadence}. | vs 4% T-bill: ${benchmark}.`;
+    if (line.length > 600) line = `${line.slice(0, 596)}...`;
+    if (line.length < 20) line = `${line} Hold the position and check the protocol's own page.`;
+    return line;
   }
 
   const exitBase = `withdraw if TVL drops >20% or loss exceeds $${Math.round(capital * 0.3)}`;
@@ -845,7 +846,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
 
   let steps: string[];
 
-  if (/lend|collateral|cdp/.test(c)) {
+  if (/lend|collateral|cdp/.test(category)) {
     steps = [
       makeStep(
         `Prepare wallet for ${p.name} on ${chain}; verify app, check eligibility, fund $${capital} budget plus native gas for ${fee}.`,
@@ -870,7 +871,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
         cadBase,
         `target net ~$${estYield}/yr vs $${bench4pc}/yr T-bill over ${hold} days`),
     ];
-  } else if (/dex|liquidity manager/.test(c)) {
+  } else if (/dex|liquidity manager/.test(category)) {
     steps = [
       makeStep(
         `Fund wallet for ${p.name} on ${chain}; budget $${capital} + native gas for ${fee}.`,
@@ -887,7 +888,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
         '15 min', `withdraw if IL exceeds 5% or pool TVL drops 30%`, cadBase,
         `LP fees ~5–20% APY vs 4% T-bill; net of IL must stay positive`),
     ];
-  } else if (/bridge/.test(c)) {
+  } else if (/bridge/.test(category)) {
     steps = [
       makeStep(
         `Quote transfer through ${p.name} to ${chain}; send $10 test first, verify receipt.`,
@@ -905,7 +906,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
         '15 min', 'withdraw all if destination liquidity drops', 'verify weekly',
         `target bridge use for fee farming only if reward > cost`),
     ];
-  } else if (/stak|anchor btc|decentralized btc/.test(c)) {
+  } else if (/stak|anchor btc|decentralized btc/.test(category)) {
     steps = [
       makeStep(
         `Acquire $${capital} of supported staking asset for ${p.name} on ${chain}; verify receipt token and withdrawal queue.`,
@@ -923,7 +924,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
         `${hold} days; 10 min weekly`, `exit if net APY < 4% T-bill including gas`, cadBase,
         `target net ~$${estYield}/yr vs $${bench4pc}/yr T-bill; queue may add 1–21 days`),
     ];
-  } else if (/perpetual|derivative|options|synthetic|basis trading/.test(c)) {
+  } else if (/perpetual|derivative|options|synthetic|basis trading/.test(category)) {
     steps = [
       makeStep(
         `Fund ${p.name} on ${chain} with $${capital} of accepted margin; read contract size, funding, liquidation rules.`,
@@ -941,7 +942,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
         'same day; 15 min', 'close all positions; do not leave margin exposed', 'once at exit',
         `final P/L must be compared to 4% T-bill to assess whether risk was compensated`),
     ];
-  } else if (/prediction/.test(c)) {
+  } else if (/prediction/.test(category)) {
     steps = [
       makeStep(
         `Fund ${p.name} with $20 of settlement asset on ${chain}; read one market's resolution source and expiry.`,
@@ -959,7 +960,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
         '10 min', 'exit before resolution if market freezes', 'once at resolution/exit',
         `settled return vs 4% T-bill; prediction markets are binary: positive edge or total loss`),
     ];
-  } else if (/rwa|cedefi|otc/.test(c)) {
+  } else if (/rwa|cedefi|otc/.test(category)) {
     steps = [
       makeStep(
         `Check ${p.name}'s investor restrictions, KYC, custody and redemption minimums; skip if ineligible or minimum > $${capital}.`,
@@ -977,7 +978,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
         `${hold} days plus settlement delay`, 'exit at first redemption window after hold', cadBase,
         `net realized return vs 4% T-bill; include subscription/redemption fees in comparison`),
     ];
-  } else if (/stable|reserve currency/.test(c)) {
+  } else if (/stable|reserve currency/.test(category)) {
     steps = [
       makeStep(
         `Compare mint/redeem quotes for ${p.name}'s stable asset on ${chain}; inspect collateral, reject quote >0.5% away from intended peg.`,
@@ -994,7 +995,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
         `${hold} days; 10 min weekly`, `exit if net yield < 4% T-bill`, cadBase,
         `target net ~$${estYield}/yr vs $${bench4pc}/yr T-bill`),
     ];
-  } else if (/yield|farm|curator|allocator|indexes|options vault/.test(c)) {
+  } else if (/yield|farm|curator|allocator|indexes|options vault/.test(category)) {
     steps = [
       makeStep(
         `Compare ${p.name}'s vault assets, strategy, management fee and withdrawal lock on ${chain}; choose unlevered vault with min ≤ $${capital}.`,
@@ -1011,7 +1012,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
         `${hold} days; 10 min weekly`, `exit if net APY < 4% T-bill over ${hold} days`, cadBase,
         `target net ~$${estYield}/yr vs $${bench4pc}/yr T-bill; withdrawal lock may delay exit`),
     ];
-  } else if (/insurance/.test(c)) {
+  } else if (/insurance/.test(category)) {
     steps = [
       makeStep(
         `Find ${p.name} cover product matching existing position on ${chain}; read exclusions, claim evidence and deductible.`,
@@ -1028,7 +1029,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
         '10 min; 30-day policy', 'file claim immediately if covered event occurs', 'once at expiry',
         `breakeven vs 4% T-bill only if claim is paid; insurance is a cost center, not an investment`),
     ];
-  } else if (/launchpad|nft marketplace/.test(c)) {
+  } else if (/launchpad|nft marketplace/.test(category)) {
     steps = [
       makeStep(
         `Inspect ${p.name}'s active listings on ${chain}; check participation terms and exit liquidity; choose listing priced <$10.`,
@@ -1045,7 +1046,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
         '10 min weekly for 30 days', 'exit if no buyer at 80%+ of cost after 30 days', 'check weekly',
         `realized return vs 4% T-bill; illiquid assets carry high opportunity cost`),
     ];
-  } else if (/payments|card issuer/.test(c)) {
+  } else if (/payments|card issuer/.test(category)) {
     steps = [
       makeStep(
         `Check ${p.name}'s supported payment asset, region and refund policy on ${chain}; verify merchant or recipient.`,
